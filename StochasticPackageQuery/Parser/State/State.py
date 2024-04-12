@@ -10,7 +10,7 @@ class State:
     def process(self, query: Query, char: chr) -> Query:
         return query
     
-    def get_transitions(self) -> [Transition]:
+    def get_transitions(self) -> list[Transition]:
         return self.__transitions
     
     def add_transition(self, transition: Transition):
