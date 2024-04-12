@@ -14,6 +14,7 @@ class Query:
         self.__package_alias = ''
         self.__relation = ''
         self.__relation_alias = ''
+        self.__base_predicate = ''
         self.__constraints = []
         self.__objective = Objective()
 
@@ -34,6 +35,15 @@ class Query:
 
     def add_character_to_package_alias(self, char: chr):
         self.__package_alias += char
+    
+    def set_base_predicate(self, base_predicate: str):
+        self.__base_predicate = base_predicate
+
+    def get_base_predicate(self) -> str:
+        return self.__base_predicate
+
+    def add_character_to_base_predicate(self, char: chr):
+        self.__base_predicate += char
 
     def set_relation(self, relation: str):
         self.__relation = relation

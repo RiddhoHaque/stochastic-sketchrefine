@@ -18,7 +18,7 @@ class State:
             if existing_transition.get_trigger() == transition.get_trigger():
                 raise Exception
         self.__transitions.append(transition)
-    
+
     def get_next_state(self, char: chr):
         for transition in self.__transitions:
             if transition.fires(char):

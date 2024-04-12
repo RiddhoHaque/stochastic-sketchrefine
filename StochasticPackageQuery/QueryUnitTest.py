@@ -93,6 +93,19 @@ class QueryUnitTest(unittest.TestCase):
         query.add_character_to_relation_alias('r')
         self.assertEqual(query.get_relation_alias(), 'tr')
 
+    def test_base_predicate_consistency(self):
+        query = Query()
+        self.assertEqual(query.get_base_predicate(), '')
+        query.set_base_predicate("where status='free'")
+        self.assertEqual(query.get_base_predicate(), "where status='free'")
+
+    def test_set_base_predicate_character_by_character(self):
+        query = Query()
+        base_predicate = "where status='free'"
+        for character in base_predicate:
+            query.add_character_to_base_predicate(character)
+        self.assertEqual(query.get_base_predicate(), base_predicate)
+
     def test_add_constraint(self):
         query = Query()
         constraint = Constraint()
@@ -244,6 +257,8 @@ class QueryUnitTest(unittest.TestCase):
         self.test_set_relation_character_by_character()
         self.test_relation_alias_consistency()
         self.test_set_relation_alias_character_by_character()
+        self.test_base_predicate_consistency()
+        self.test_set_base_predicate_character_by_character()
         self.test_add_constraint()
         self.test_add_repeat_constraint()
         self.test_add_digit_to_repeat_constraint()
