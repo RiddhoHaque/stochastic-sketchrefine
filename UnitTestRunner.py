@@ -6,6 +6,7 @@ from StochasticPackageQuery.Constraints.ExpectedSumConstraint.ExpectedSumConstra
 from StochasticPackageQuery.Constraints.VaRConstraint.VaRConstraintUnitTest import VaRConstraintUnitTest
 from StochasticPackageQuery.Objective.ObjectiveUnitTest import ObjectiveUnitTest
 from StochasticPackageQuery.QueryUnitTest import QueryUnitTest
+from StochasticPackageQuery.Parser.ParserUnitTest import ParserUnitTest
 from StochasticPackageQuery.Parser.State.StateUnitTest import StateUnitTest
 from StochasticPackageQuery.Parser.Transition.TransitionUnitTest import TransitionUnitTest
 from Utils.UtilsUnitTest import UtilsUnitTest
@@ -23,4 +24,5 @@ def UnitTestRunner():
     QueryUnitTest().main()
     TransitionUnitTest().main()
     StateUnitTest().main()
+    ParserUnitTest().main()
     print('All unit tests passed')

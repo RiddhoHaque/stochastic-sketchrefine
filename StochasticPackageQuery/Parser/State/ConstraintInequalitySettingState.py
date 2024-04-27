@@ -2,8 +2,8 @@ from StochasticPackageQuery.Parser.State.State import State
 from StochasticPackageQuery.Query import Query
 
 
-class PackageAliasEditingState(State):
+class ConstraintInequalitySettingState(State):
 
     def process(self, query: Query, char: chr) -> Query:
-        query.add_character_to_package_alias(char)
+        query.set_constraint_inequality_sign(char)
         return query

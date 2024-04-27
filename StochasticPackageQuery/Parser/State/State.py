@@ -15,7 +15,9 @@ class State:
     
     def add_transition(self, transition: Transition):
         for existing_transition in self.__transitions:
-            if existing_transition.get_trigger() == transition.get_trigger():
+            if existing_transition.get_trigger() == transition.get_trigger()\
+                and existing_transition.fires(transition.get_trigger())\
+                and transition.fires(transition.get_trigger()):
                 raise Exception
         self.__transitions.append(transition)
 

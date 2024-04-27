@@ -99,7 +99,8 @@ class Query:
         self.__constraints[-1].add_character_to_attribute_name(char)
 
     def set_constraint_inequality_sign(self, char: chr):
-        if len(self.__constraints) < 1 or (not self.__constraints[-1].is_deterministic_constraint() and
+        if len(self.__constraints) < 1 or (not self.__constraints[-1].is_package_size_constraint() and
+                                           not self.__constraints[-1].is_deterministic_constraint() and
                                            not self.__constraints[-1].is_expected_sum_constraint() and
                                            not self.__constraints[-1].is_var_constraint()):
             raise Exception
@@ -112,6 +113,14 @@ class Query:
             raise Exception
         self.__constraints[-1].add_character_to_sum_limit(char)
 
+    def convert_final_deterministic_constraint_to_var_constraint(self):
+        if len(self.__constraints) < 1 or not self.__constraints[-1].is_deterministic_constraint():
+            raise Exception
+        deterministic_constraint = self.__constraints[-1]
+        var_constraint = VaRConstraint()
+        var_constraint.initialize_from_deterministic_constraint(deterministic_constraint)
+        self.__constraints[-1] = var_constraint
+    
     def add_character_to_constraint_probability_threshold(self, char: chr):
         if len(self.__constraints) < 1 or not self.__constraints[-1].is_var_constraint():
             raise Exception
@@ -128,6 +137,9 @@ class Query:
 
     def set_objective_stochasticity(self, is_stochastic: bool):
         self.__objective.set_stochasticity(is_stochastic)
+
+    def add_character_to_objective_attribute(self, char: chr):
+        self.__objective.add_character_to_attribute_name(char)
 
     def get_objective(self):
         return self.__objective

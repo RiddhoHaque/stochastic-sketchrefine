@@ -1,5 +1,6 @@
 import unittest
 from StochasticPackageQuery.Constraints.Constraint import Constraint
+from StochasticPackageQuery.Constraints.DeterministicConstraint.DeterministicConstraint import DeterministicConstraint
 from StochasticPackageQuery.Objective.Objective import Objective
 from StochasticPackageQuery.Query import Query
 from Utils.ObjectiveType import ObjectiveType
@@ -137,7 +138,7 @@ class QueryUnitTest(unittest.TestCase):
         with self.assertRaises(Exception):
             query.add_digit_to_package_size_constraint(1)
         constraint = Constraint()
-        query.add_constraint(Constraint)
+        query.add_constraint(constraint)
         with self.assertRaises(Exception):
             query.add_digit_to_package_size_constraint(1)
         query.add_package_size_constraint()
@@ -220,6 +221,28 @@ class QueryUnitTest(unittest.TestCase):
         query.add_character_to_constraint_sum_limit('5')
         self.assertAlmostEqual(query.get_constraints()[-1].get_sum_limit(), -10.5)
 
+    def test_convert_deterministic_constraint_to_var_constraint(self):
+        query = Query()
+        with self.assertRaises(Exception):
+            query.convert_final_deterministic_constraint_to_var_constraint()
+        query.add_constraint(Constraint())
+        with self.assertRaises(Exception):
+            query.convert_final_deterministic_constraint_to_var_constraint()
+        deterministic_constraint = DeterministicConstraint()
+        deterministic_constraint.set_attribute_name('A')
+        deterministic_constraint.set_inequality_sign('>')
+        deterministic_constraint.set_sum_limit(10)
+        query.add_constraint(deterministic_constraint)
+        query.convert_final_deterministic_constraint_to_var_constraint()
+        last_constraint = query.get_constraints()[-1]
+        self.assertTrue(last_constraint.is_var_constraint())
+        self.assertEqual(last_constraint.get_attribute_name(),
+                         deterministic_constraint.get_attribute_name())
+        self.assertEqual(last_constraint.get_inequality_sign(),
+                         deterministic_constraint.get_inequality_sign())
+        self.assertEqual(last_constraint.get_sum_limit(),
+                         deterministic_constraint.get_sum_limit())
+
     def test_set_constraint_probability_threshold(self):
         query = Query()
         with self.assertRaises(Exception):
@@ -270,5 +293,6 @@ class QueryUnitTest(unittest.TestCase):
         self.test_expected_sum_constraint_inequality()
         self.test_var_constraint_inequality()
         self.test_set_constraint_sum_limit()
+        self.test_convert_deterministic_constraint_to_var_constraint()
         self.test_set_constraint_probability_threshold()
         self.test_objective_consistency()
