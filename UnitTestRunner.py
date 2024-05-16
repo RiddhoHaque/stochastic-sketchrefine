@@ -4,6 +4,7 @@ from StochasticPackageQuery.Constraints.PackageSizeConstraint.PackageSizeConstra
 from StochasticPackageQuery.Constraints.DeterministicConstraint.DeterministicConstraintUnitTest import DeterministicConstraintUnitTest
 from StochasticPackageQuery.Constraints.ExpectedSumConstraint.ExpectedSumConstraintUnitTest import ExpectedSumConstraintUnitTest
 from StochasticPackageQuery.Constraints.VaRConstraint.VaRConstraintUnitTest import VaRConstraintUnitTest
+from StochasticPackageQuery.Constraints.CVaRConstraint.CVaRConstraintUnitTest import CVaRConstraintUnitTest
 from StochasticPackageQuery.Objective.ObjectiveUnitTest import ObjectiveUnitTest
 from StochasticPackageQuery.QueryUnitTest import QueryUnitTest
 from StochasticPackageQuery.Parser.ParserUnitTest import ParserUnitTest
@@ -18,6 +19,7 @@ def UnitTestRunner():
     DeterministicConstraintUnitTest().main()
     ExpectedSumConstraintUnitTest().main()
     VaRConstraintUnitTest().main()
+    CVaRConstraintUnitTest().main()
     ObjectiveUnitTest().main()
     ConstraintUnitTest().main()
     UtilsUnitTest().main()

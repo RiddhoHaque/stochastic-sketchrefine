@@ -1,6 +1,9 @@
 import unittest
 from StochasticPackageQuery.Parser.Parser import Parser
+from Utils.ObjectiveType import ObjectiveType
 from Utils.RelationalOperators import RelationalOperators
+from Utils.Stochasticity import Stochasticity
+from Utils.TailType import TailType
 
 
 class ParserUnitTest(unittest.TestCase):
@@ -44,6 +47,12 @@ class ParserUnitTest(unittest.TestCase):
         self.assertEqual(query.get_constraints()[3].get_sum_limit(), -50)
         self.assertEqual(query.get_constraints()[3].get_probability_threshold(),
                          0.95)
+        self.assertEqual(query.get_objective().get_objective_type(),
+                         ObjectiveType.MAXIMIZATION)
+        self.assertEqual(query.get_objective().get_stochasticity(),
+                         Stochasticity.STOCHASTIC)
+        self.assertEqual(query.get_objective().get_attribute_name(),
+                         'gain')
     
     def test_without_aliases(self):
         query_lines = []
@@ -79,6 +88,12 @@ class ParserUnitTest(unittest.TestCase):
         self.assertEqual(query.get_constraints()[3].get_sum_limit(), -50)
         self.assertEqual(query.get_constraints()[3].get_probability_threshold(),
                          0.95)
+        self.assertEqual(query.get_objective().get_objective_type(),
+                         ObjectiveType.MAXIMIZATION)
+        self.assertEqual(query.get_objective().get_stochasticity(),
+                         Stochasticity.STOCHASTIC)
+        self.assertEqual(query.get_objective().get_attribute_name(),
+                         'gain')
 
     def test_without_selection_predicate(self):
         query_lines = []
@@ -115,6 +130,12 @@ class ParserUnitTest(unittest.TestCase):
         self.assertEqual(query.get_constraints()[3].get_sum_limit(), -50)
         self.assertEqual(query.get_constraints()[3].get_probability_threshold(),
                          0.95)
+        self.assertEqual(query.get_objective().get_objective_type(),
+                         ObjectiveType.MAXIMIZATION)
+        self.assertEqual(query.get_objective().get_stochasticity(),
+                         Stochasticity.STOCHASTIC)
+        self.assertEqual(query.get_objective().get_attribute_name(),
+                         'gain')
 
     def test_without_repeat_constraint(self):
         query_lines = []
@@ -150,6 +171,85 @@ class ParserUnitTest(unittest.TestCase):
         self.assertEqual(query.get_constraints()[2].get_sum_limit(), -50)
         self.assertEqual(query.get_constraints()[2].get_probability_threshold(),
                          0.95)
+        self.assertEqual(query.get_objective().get_objective_type(),
+                         ObjectiveType.MAXIMIZATION)
+        self.assertEqual(query.get_objective().get_stochasticity(),
+                         Stochasticity.STOCHASTIC)
+        self.assertEqual(query.get_objective().get_attribute_name(),
+                         'gain')
+
+    def test_with_cvar_constraint(self):
+        spaql_plus_query = [
+            "SELECT PACKAGE(*) AS Portfolio",
+            "FROM Stock_Investments AS S",
+            "REPEAT 1",
+            "WHERE Category = 'Technology'",
+            "SUCH THAT COUNT(*) <= 30 AND",
+            "SUM(Price) <= 5000 AND",
+            "SUM(Gain) >= -50 WITH PROBABILITY >= 0.95 AND",
+            "EXPECTED SUM(Gain) >= 40 AND",
+            "EXPECTED SUM(Gain) >= -70 IN LOWEST 5% OF CASES",
+            "MAXIMIZE EXPECTED SUM(Gain)",
+        ]
+        parser = Parser()
+        query = parser.parse(spaql_plus_query)
+        self.assertEqual(query.get_projected_attributes(), '*')
+        self.assertEqual(query.get_package_alias(), 'portfolio')
+        self.assertEqual(query.get_relation(), 'stock_investments')
+        self.assertEqual(query.get_relation_alias(), 's')
+        self.assertEqual(query.get_base_predicate(), "category = 'technology' ")
+        self.assertEqual(len(query.get_constraints()), 6)
+        
+        self.assertTrue(query.get_constraints()[0].is_repeat_constraint())
+        self.assertEqual(query.get_constraints()[0].get_repetition_limit(), 1)
+        self.assertTrue(query.get_constraints()[1].is_package_size_constraint())
+        
+        self.assertEqual(query.get_constraints()[1].get_inequality_sign(),
+                        RelationalOperators.LESS_THAN_OR_EQUAL_TO)
+        self.assertEqual(query.get_constraints()[1].get_package_size_limit(),
+                         30)
+        
+        self.assertTrue(query.get_constraints()[2].is_deterministic_constraint())
+        self.assertEqual(query.get_constraints()[2].get_inequality_sign(),
+                        RelationalOperators.LESS_THAN_OR_EQUAL_TO)
+        self.assertEqual(query.get_constraints()[2].get_attribute_name(),
+                         'price')
+        self.assertEqual(query.get_constraints()[2].get_sum_limit(), 5000)
+        
+        self.assertTrue(query.get_constraints()[3].is_risk_constraint())
+        self.assertTrue(query.get_constraints()[3].is_var_constraint())
+        self.assertEqual(query.get_constraints()[3].get_attribute_name(),
+                        'gain')
+        self.assertEqual(query.get_constraints()[3].get_inequality_sign(),
+                        RelationalOperators.GREATER_THAN_OR_EQUAL_TO)
+        self.assertEqual(query.get_constraints()[3].get_sum_limit(), -50)
+        self.assertEqual(query.get_constraints()[3].get_probability_threshold(),
+                         0.95)
+        
+        self.assertTrue(query.get_constraints()[4].is_expected_sum_constraint())
+        self.assertEqual(query.get_constraints()[4].get_attribute_name(), 'gain')
+        self.assertEqual(query.get_constraints()[4].get_inequality_sign(),
+                         RelationalOperators.GREATER_THAN_OR_EQUAL_TO)
+        self.assertEqual(query.get_constraints()[4].get_sum_limit(), 40)
+        
+        self.assertTrue(query.get_constraints()[5].is_risk_constraint())
+        self.assertTrue(query.get_constraints()[5].is_cvar_constraint())
+        self.assertEqual(query.get_constraints()[5].get_attribute_name(), 'gain')
+        self.assertEqual(query.get_constraints()[5].get_inequality_sign(),
+                         RelationalOperators.GREATER_THAN_OR_EQUAL_TO)
+        self.assertEqual(query.get_constraints()[5].get_sum_limit(), -70)
+        self.assertEqual(query.get_constraints()[5].get_tail_type(),
+                         TailType.LOWEST)
+        self.assertEqual(query.get_constraints()[5].get_percentage_of_scenarios(),
+                         5)
+        
+        self.assertEqual(query.get_objective().get_objective_type(),
+                         ObjectiveType.MAXIMIZATION)
+        self.assertEqual(query.get_objective().get_stochasticity(),
+                         Stochasticity.STOCHASTIC)
+        self.assertEqual(query.get_objective().get_attribute_name(),
+                         'gain')
+
 
     def main(self):
         self.base_query_lines = [
@@ -176,3 +276,4 @@ class ParserUnitTest(unittest.TestCase):
         self.test_base_query_parsing()
         self.test_without_aliases()
         self.test_without_selection_predicate()
+        self.test_with_cvar_constraint()

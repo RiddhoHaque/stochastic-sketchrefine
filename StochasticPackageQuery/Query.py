@@ -4,6 +4,7 @@ from StochasticPackageQuery.Constraints.PackageSizeConstraint.PackageSizeConstra
 from StochasticPackageQuery.Constraints.DeterministicConstraint.DeterministicConstraint import DeterministicConstraint
 from StochasticPackageQuery.Constraints.ExpectedSumConstraint.ExpectedSumConstraint import ExpectedSumConstraint
 from StochasticPackageQuery.Constraints.VaRConstraint.VaRConstraint import VaRConstraint
+from StochasticPackageQuery.Constraints.CVaRConstraint.CVaRConstraint import CVaRConstraint
 from StochasticPackageQuery.Objective.Objective import Objective
 
 
@@ -90,6 +91,9 @@ class Query:
 
     def add_var_constraint(self):
         self.__constraints.append(VaRConstraint())
+    
+    def add_cvar_constraint(self):
+        self.__constraints.append(CVaRConstraint())
 
     def add_character_to_attribute_name(self, char: chr):
         if len(self.__constraints) < 1 or (not self.__constraints[-1].is_deterministic_constraint() and
@@ -121,10 +125,29 @@ class Query:
         var_constraint.initialize_from_deterministic_constraint(deterministic_constraint)
         self.__constraints[-1] = var_constraint
     
+    def convert_final_expected_sum_constraint_to_cvar_constraint(self):
+        if len(self.__constraints) < 1 or not self.__constraints[-1].is_expected_sum_constraint():
+            raise Exception
+        expected_sum_constraint = self.__constraints[-1]
+        cvar_constraint = CVaRConstraint()
+        cvar_constraint.initialize_from_expected_sum_constraint(expected_sum_constraint)
+        self.__constraints[-1] = cvar_constraint
+
+    
     def add_character_to_constraint_probability_threshold(self, char: chr):
         if len(self.__constraints) < 1 or not self.__constraints[-1].is_var_constraint():
             raise Exception
         self.__constraints[-1].add_character_to_probability_threshold(char)
+
+    def add_character_to_constraint_tail_type(self, char: chr):
+        if len(self.__constraints) < 1 or not self.__constraints[-1].is_cvar_constraint():
+            raise Exception
+        self.__constraints[-1].set_tail_type(char)
+    
+    def add_character_to_constraint_percentage_of_scenarios(self, char: chr):
+        if len(self.__constraints) < 1 or not self.__constraints[-1].is_cvar_constraint():
+            raise Exception
+        self.__constraints[-1].add_character_to_percentage_of_scenarios(char)
 
     def get_constraints(self):
         return self.__constraints

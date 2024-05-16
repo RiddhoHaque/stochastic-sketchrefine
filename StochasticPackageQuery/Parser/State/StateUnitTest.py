@@ -6,7 +6,9 @@ from StochasticPackageQuery.Parser.State.AddRepeatConstraintState import AddRepe
 from StochasticPackageQuery.Parser.State.BasePredicateEditingState import BasePredicateEditingState
 from StochasticPackageQuery.Parser.State.ConstraintAttributeNameEditingState import ConstraintAttributeNameEditingState
 from StochasticPackageQuery.Parser.State.ConstraintInequalitySettingState import ConstraintInequalitySettingState
+from StochasticPackageQuery.Parser.State.ConstraintPercentageEditingState import ConstraintPercentageEditingState
 from StochasticPackageQuery.Parser.State.ConstraintSumLimitSettingState import ConstraintSumLimitSettingState
+from StochasticPackageQuery.Parser.State.ConstraintTailTypeEditingState import ConstraintTailTypeEditingState
 from StochasticPackageQuery.Parser.State.ObjectiveAttributeNameEditingState import ObjectiveAttributeNameEditingState
 from StochasticPackageQuery.Parser.State.ObjectiveStochasticityState import ObjectiveStochasticityState
 from StochasticPackageQuery.Parser.State.ObjectiveTypeState import ObjectiveTypeState
@@ -19,11 +21,13 @@ from StochasticPackageQuery.Parser.State.RelationNameEditingState import Relatio
 from StochasticPackageQuery.Parser.State.RepetitionLimitEditingState import RepetitionLimitEditingState
 from StochasticPackageQuery.Parser.State.State import State
 from StochasticPackageQuery.Parser.State.TurnToVaRConstraintState import TurnToVaRConstraintState
+from StochasticPackageQuery.Parser.State.TurnToCVaRConstraintState import TurnToCVaRConstraintState
 from StochasticPackageQuery.Parser.Transition.Transition import Transition
 from StochasticPackageQuery.Query import Query
 from Utils.RelationalOperators import RelationalOperators
 from Utils.ObjectiveType import ObjectiveType
 from Utils.Stochasticity import Stochasticity
+from Utils.TailType import TailType
 
 
 class StateUnitTest(unittest.TestCase):
@@ -197,6 +201,22 @@ class StateUnitTest(unittest.TestCase):
         self.assertEqual(query.get_constraints()[
                         -1].get_repetition_limit(), 2)
     
+    def test_constraint_tail_type_editing_state(self):
+        state = ConstraintTailTypeEditingState()
+        query = Query()
+        query.add_cvar_constraint()
+        query = state.process(query, 'l')
+        self.assertEqual(query.get_constraints()[
+            -1].get_tail_type(), TailType.LOWEST)
+
+    def test_constraint_percentage_editing_state(self):
+        state = ConstraintPercentageEditingState()
+        query = Query()
+        query.add_cvar_constraint()
+        query = state.process(query, '6')
+        self.assertEqual(query.get_constraints()[
+            -1].get_percentage_of_scenarios(), 6)
+
     def test_turn_to_var_constraint_state(self):
         state = TurnToVaRConstraintState()
         query = Query()
@@ -207,6 +227,18 @@ class StateUnitTest(unittest.TestCase):
         query = state.process(query, 'a')
         self.assertEqual(len(query.get_constraints()), 1)
         self.assertTrue(query.get_constraints()[0].is_var_constraint())
+    
+    def test_turn_to_cvar_constraint_state(self):
+        state = TurnToCVaRConstraintState()
+        query = Query()
+        query.add_expected_sum_constraint()
+        query.add_character_to_attribute_name('a')
+        query.set_constraint_inequality_sign('<')
+        query.add_character_to_constraint_sum_limit('1')
+        query = state.process(query, 'a')
+        self.assertEqual(len(query.get_constraints()), 1)
+        self.assertTrue(query.get_constraints()[0].is_cvar_constraint())
+
 
     def main(self):
         self.test_process_keeps_query_unchanged()
@@ -229,5 +261,8 @@ class StateUnitTest(unittest.TestCase):
         self.test_relation_alias_editing_state()
         self.test_relation_name_editing_state()
         self.test_repetition_limit_editing_state()
+        self.test_constraint_percentage_editing_state()
+        self.test_constraint_tail_type_editing_state()
         self.test_turn_to_var_constraint_state()
+        self.test_turn_to_cvar_constraint_state()
 

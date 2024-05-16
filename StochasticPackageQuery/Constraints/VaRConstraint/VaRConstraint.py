@@ -34,6 +34,9 @@ class VaRConstraint(DeterministicConstraint):
 
     def is_var_constraint(self) -> bool:
         return True
+    
+    def is_deterministic_constraint(self) -> bool:
+        return False
 
     def is_probability_threshold_set(self) -> bool:
         return self.__is_probability_threshold_set

@@ -2,6 +2,7 @@ import unittest
 from Utils.ObjectiveType import ObjectiveType
 from Utils.RelationalOperators import RelationalOperators
 from Utils.Stochasticity import Stochasticity
+from Utils.TailType import TailType
 
 
 class UtilsUnitTest(unittest.TestCase):
@@ -16,6 +17,9 @@ class UtilsUnitTest(unittest.TestCase):
 
     def test_stochasticity_uniqueness(self):
         self.assertFalse(Stochasticity.STOCHASTIC == Stochasticity.DETERMINISTIC)
+    
+    def test_tailtype_uniqueness(self):
+        self.assertFalse(TailType.HIGHEST == TailType.LOWEST)
 
     def main(self):
         self.test_objective_type_uniqueness()

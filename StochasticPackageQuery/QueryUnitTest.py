@@ -1,11 +1,13 @@
 import unittest
 from StochasticPackageQuery.Constraints.Constraint import Constraint
 from StochasticPackageQuery.Constraints.DeterministicConstraint.DeterministicConstraint import DeterministicConstraint
+from StochasticPackageQuery.Constraints.ExpectedSumConstraint.ExpectedSumConstraint import ExpectedSumConstraint
 from StochasticPackageQuery.Objective.Objective import Objective
 from StochasticPackageQuery.Query import Query
 from Utils.ObjectiveType import ObjectiveType
 from Utils.RelationalOperators import RelationalOperators
 from Utils.Stochasticity import Stochasticity
+from Utils.TailType import TailType
 
 
 class QueryUnitTest(unittest.TestCase):
@@ -205,6 +207,7 @@ class QueryUnitTest(unittest.TestCase):
         query.set_constraint_inequality_sign('=')
         self.assertEqual(query.get_constraints()[-1].get_inequality_sign(),
                          RelationalOperators.EQUALS)
+    
     def test_set_constraint_sum_limit(self):
         query = Query()
         with self.assertRaises(Exception):
@@ -236,12 +239,36 @@ class QueryUnitTest(unittest.TestCase):
         query.convert_final_deterministic_constraint_to_var_constraint()
         last_constraint = query.get_constraints()[-1]
         self.assertTrue(last_constraint.is_var_constraint())
+        self.assertFalse(last_constraint.is_deterministic_constraint())
         self.assertEqual(last_constraint.get_attribute_name(),
                          deterministic_constraint.get_attribute_name())
         self.assertEqual(last_constraint.get_inequality_sign(),
                          deterministic_constraint.get_inequality_sign())
         self.assertEqual(last_constraint.get_sum_limit(),
                          deterministic_constraint.get_sum_limit())
+    
+    def test_convert_expected_sum_constraint_to_cvar_constraint(self):
+        query = Query()
+        with self.assertRaises(Exception):
+            query.convert_final_expected_sum_constraint_to_cvar_constraint(self)
+        query.add_constraint(Constraint())
+        with self.assertRaises(Exception):
+            query.convert_final_expected_sum_constraint_to_cvar_constraint(self)
+        expected_sum_constraint = ExpectedSumConstraint()
+        expected_sum_constraint.set_attribute_name('A')
+        expected_sum_constraint.set_inequality_sign('>')
+        expected_sum_constraint.set_sum_limit(10)
+        query.add_constraint(expected_sum_constraint)
+        query.convert_final_expected_sum_constraint_to_cvar_constraint()
+        last_constraint = query.get_constraints()[-1]
+        self.assertTrue(last_constraint.is_cvar_constraint())
+        self.assertFalse(last_constraint.is_expected_sum_constraint())
+        self.assertEqual(last_constraint.get_attribute_name(),
+                         expected_sum_constraint.get_attribute_name())
+        self.assertEqual(last_constraint.get_inequality_sign(),
+                         expected_sum_constraint.get_inequality_sign())
+        self.assertEqual(last_constraint.get_sum_limit(),
+                         expected_sum_constraint.get_sum_limit())
 
     def test_set_constraint_probability_threshold(self):
         query = Query()
@@ -256,6 +283,29 @@ class QueryUnitTest(unittest.TestCase):
         query.add_character_to_constraint_probability_threshold('9')
         query.add_character_to_constraint_probability_threshold('5')
         self.assertAlmostEqual(query.get_constraints()[-1].get_probability_threshold(), 0.95)
+    
+    def test_set_constraint_tail_type(self):
+        query = Query()
+        with self.assertRaises(Exception):
+            query.add_character_to_constraint_tail_type('l')
+        query.add_constraint(Constraint())
+        with self.assertRaises(Exception):
+            query.add_character_to_constraint_tail_type('l')
+        query.add_cvar_constraint()
+        query.add_character_to_constraint_tail_type('l')
+        self.assertEqual(query.get_constraints()[-1].get_tail_type(),
+                         TailType.LOWEST)
+    
+    def test_set_constraint_percentage_of_scenarios(self):
+        query = Query()
+        with self.assertRaises(Exception):
+            query.add_character_to_constraint_percentage_of_scenarios('9')
+        query.add_constraint(Constraint())
+        with self.assertRaises(Exception):
+            query.add_character_to_constraint_percentage_of_scenarios('9')
+        query.add_cvar_constraint()
+        query.add_character_to_constraint_percentage_of_scenarios('9')
+        self.assertAlmostEqual(query.get_constraints()[-1].get_percentage_of_scenarios(), 9)
 
     def test_objective_consistency(self):
         query = Query()
@@ -270,6 +320,11 @@ class QueryUnitTest(unittest.TestCase):
         self.assertEqual(query.get_objective().get_stochasticity(), Stochasticity.STOCHASTIC)
         query.set_objective_stochasticity(is_stochastic=False)
         self.assertEqual(query.get_objective().get_stochasticity(), Stochasticity.DETERMINISTIC)
+        query.add_character_to_objective_attribute('a')
+        query.add_character_to_objective_attribute('t')
+        query.add_character_to_objective_attribute('t')
+        query.add_character_to_objective_attribute('r')
+        self.assertEqual(query.get_objective().get_attribute_name(), 'attr')
 
     def main(self):
         self.test_projected_attribute_consistency()
@@ -294,5 +349,8 @@ class QueryUnitTest(unittest.TestCase):
         self.test_var_constraint_inequality()
         self.test_set_constraint_sum_limit()
         self.test_convert_deterministic_constraint_to_var_constraint()
+        self.test_convert_expected_sum_constraint_to_cvar_constraint()
         self.test_set_constraint_probability_threshold()
+        self.test_set_constraint_tail_type()
+        self.test_set_constraint_percentage_of_scenarios()
         self.test_objective_consistency()

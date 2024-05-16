@@ -5,7 +5,9 @@ from StochasticPackageQuery.Parser.State.AddRepeatConstraintState import AddRepe
 from StochasticPackageQuery.Parser.State.BasePredicateEditingState import BasePredicateEditingState
 from StochasticPackageQuery.Parser.State.ConstraintAttributeNameEditingState import ConstraintAttributeNameEditingState
 from StochasticPackageQuery.Parser.State.ConstraintInequalitySettingState import ConstraintInequalitySettingState
+from StochasticPackageQuery.Parser.State.ConstraintPercentageEditingState import ConstraintPercentageEditingState
 from StochasticPackageQuery.Parser.State.ConstraintSumLimitSettingState import ConstraintSumLimitSettingState
+from StochasticPackageQuery.Parser.State.ConstraintTailTypeEditingState import ConstraintTailTypeEditingState
 from StochasticPackageQuery.Parser.State.ObjectiveAttributeNameEditingState import ObjectiveAttributeNameEditingState
 from StochasticPackageQuery.Parser.State.ObjectiveStochasticityState import ObjectiveStochasticityState
 from StochasticPackageQuery.Parser.State.ObjectiveTypeState import ObjectiveTypeState
@@ -19,6 +21,7 @@ from StochasticPackageQuery.Parser.State.RepetitionLimitEditingState import Repe
 from StochasticPackageQuery.Parser.State.RubberDuckState import RubberDuckState
 from StochasticPackageQuery.Parser.State.State import State
 from StochasticPackageQuery.Parser.State.TurnToVaRConstraintState import TurnToVaRConstraintState
+from StochasticPackageQuery.Parser.State.TurnToCVaRConstraintState import TurnToCVaRConstraintState
 from StochasticPackageQuery.Parser.Transition.Transition import Transition
 from StochasticPackageQuery.Query import Query
 
@@ -468,12 +471,12 @@ class Parser:
         reading_n_in_and_state.add_transition(
             Transition('d', ready_for_next_constraint)
         )
-        add_expected_value_constraint = State()
+        add_expected_sum_constraint_state = AddExpectedSumConstraintState()
         ready_for_constraints_state.add_transition(
-            Transition('e', add_expected_value_constraint)
+            Transition('e', add_expected_sum_constraint_state)
         )
         ready_for_expected_sum_attribute = self.__expect_phrase(
-            add_expected_value_constraint, 'xpected sum(')
+            add_expected_sum_constraint_state, 'xpected sum(')
         expected_sum_attribute_editing_state = ConstraintAttributeNameEditingState()
         ready_for_expected_sum_attribute.add_transition(
             Transition(')', expected_sum_attribute_editing_state,
@@ -487,11 +490,25 @@ class Parser:
         expected_sum_attribute_editing_state.add_transition(
             Transition(')', expected_sum_attribute_read_state)
         )
-        expected_sum_inequality_sign_started_state = ConstraintInequalitySettingState()
+        space_after_expected_sum_attribute_read_state = State()
+        expected_sum_attribute_read_state.add_transition(
+            Transition(' ', space_after_expected_sum_attribute_read_state)
+        )
+        space_after_expected_sum_attribute_read_state.add_transition(
+            Transition(' ', space_after_expected_sum_attribute_read_state)
+        )
+        expected_sum_inequality_sign_started_state = \
+            ConstraintInequalitySettingState()
         expected_sum_attribute_read_state.add_transition(
             Transition('>', expected_sum_inequality_sign_started_state)
         )
         expected_sum_attribute_read_state.add_transition(
+            Transition('<', expected_sum_inequality_sign_started_state)
+        )
+        space_after_expected_sum_attribute_read_state.add_transition(
+            Transition('>', expected_sum_inequality_sign_started_state)
+        )
+        space_after_expected_sum_attribute_read_state.add_transition(
             Transition('<', expected_sum_inequality_sign_started_state)
         )
         expected_sum_inequality_sign_read_state = State()
@@ -501,6 +518,16 @@ class Parser:
         expected_sum_equality_sign_read_state = ConstraintInequalitySettingState()
         expected_sum_attribute_read_state.add_transition(
             Transition('=', expected_sum_equality_sign_read_state)
+        )
+        space_after_expected_sum_constraint_equality_read_state = State()
+        expected_sum_inequality_sign_read_state.add_transition(
+            Transition(' ', space_after_expected_sum_constraint_equality_read_state)
+        )
+        expected_sum_equality_sign_read_state.add_transition(
+            Transition(' ', space_after_expected_sum_constraint_equality_read_state)
+        )
+        space_after_expected_sum_constraint_equality_read_state.add_transition(
+            Transition(' ', space_after_expected_sum_constraint_equality_read_state)
         )
         expected_sum_limit_editing_state = ConstraintSumLimitSettingState()
         for numerical in self.__numericals:
@@ -513,8 +540,98 @@ class Parser:
             expected_sum_limit_editing_state.add_transition(
                 Transition(numerical, expected_sum_limit_editing_state)
             )
+            space_after_expected_sum_constraint_equality_read_state.add_transition(
+                Transition(numerical, expected_sum_limit_editing_state)
+            )
         expected_sum_limit_parsed_state = State()
         expected_sum_limit_editing_state.add_transition(
+            Transition(' ', expected_sum_limit_parsed_state)
+        )
+        cvar_constraint_identified_state = TurnToCVaRConstraintState()
+        expected_sum_limit_parsed_state.add_transition(
+            Transition('i', cvar_constraint_identified_state)
+        )
+        in_read_state = State()
+        cvar_constraint_identified_state.add_transition(
+            Transition('n', in_read_state)
+        )
+        space_after_in_read_state = State()
+        in_read_state.add_transition(
+            Transition(' ', space_after_in_read_state)
+        )
+        space_after_in_read_state.add_transition(
+            Transition(' ', space_after_in_read_state)
+        )
+        highest_tail_type_detected_state = ConstraintTailTypeEditingState()
+        lowest_tail_type_detected_state = ConstraintTailTypeEditingState()
+        space_after_in_read_state.add_transition(
+            Transition('h', highest_tail_type_detected_state)
+        )
+        space_after_in_read_state.add_transition(
+            Transition('l', lowest_tail_type_detected_state)
+        )
+        highest_keyword_almost_read_state = self.__expect_phrase(
+            highest_tail_type_detected_state, 'ighes'
+        )
+        lowest_keyword_almost_read_state = self.__expect_phrase(
+            lowest_tail_type_detected_state, 'owes'
+        )
+        tail_type_read_state = State()
+        highest_keyword_almost_read_state.add_transition(
+            Transition('t', tail_type_read_state)
+        )
+        lowest_keyword_almost_read_state.add_transition(
+            Transition('t', tail_type_read_state)
+        )
+        space_after_tail_type_read_state = State()
+        tail_type_read_state.add_transition(
+            Transition(' ', space_after_tail_type_read_state)
+        )
+        space_after_tail_type_read_state.add_transition(
+            Transition(' ', space_after_tail_type_read_state)
+        )
+        constraint_percentage_reading_state = \
+            ConstraintPercentageEditingState()
+        for numerical in self.__numericals:
+            space_after_tail_type_read_state.add_transition(
+                Transition(numerical, constraint_percentage_reading_state)
+            )
+            constraint_percentage_reading_state.add_transition(
+                Transition(numerical, constraint_percentage_reading_state)
+            )
+        space_after_constraint_percentage_state = State()
+        percentage_read_state = State()
+        constraint_percentage_reading_state.add_transition(
+            Transition(' ', space_after_constraint_percentage_state)
+        )
+        space_after_constraint_percentage_state.add_transition(
+            Transition(' ', space_after_constraint_percentage_state)
+        )
+        constraint_percentage_reading_state.add_transition(
+            Transition('%', percentage_read_state)
+        )
+        space_after_constraint_percentage_state.add_transition(
+            Transition('%', percentage_read_state)
+        )
+        space_after_percentage_state = State()
+        percentage_read_state.add_transition(
+            Transition(' ', space_after_percentage_state)
+        )
+        space_after_percentage_state.add_transition(
+            Transition(' ', space_after_percentage_state)
+        )
+        of_read_state = self.__expect_phrase(
+            space_after_percentage_state, 'of')
+        space_after_of_state = State()
+        of_read_state.add_transition(
+            Transition(' ', space_after_of_state)
+        )
+        space_after_of_state.add_transition(
+            Transition(' ', space_after_of_state)
+        )
+        cases_read_state = self.__expect_phrase(
+            space_after_of_state, 'cases')
+        cases_read_state.add_transition(
             Transition(' ', expected_sum_limit_parsed_state)
         )
         expected_sum_limit_parsed_state.add_transition(
