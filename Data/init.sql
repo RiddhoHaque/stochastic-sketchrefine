@@ -176,7 +176,7 @@ CREATE TABLE Stock_Investments_Volatility_20x(
     drift float
 );
 
-DROP TABLE IF EXISTS Stock_Investments_Lambda_halfx;
+DROP TABLE IF EXISTS Stock_Investments_Volatility_Lambda_halfx;
 CREATE TABLE Stock_Investments_Volatility_Lambda_halfx(
     id int not null unique,
     ticker varchar(10),
@@ -187,7 +187,7 @@ CREATE TABLE Stock_Investments_Volatility_Lambda_halfx(
     drift float
 );
 
-DROP TABLE IF EXISTS Stock_Investments_Lambda_1x;
+DROP TABLE IF EXISTS Stock_Investments_Volatility_Lambda_1x;
 CREATE TABLE Stock_Investments_Volatility_Lambda_1x(
     id int not null unique,
     ticker varchar(10),
@@ -198,7 +198,7 @@ CREATE TABLE Stock_Investments_Volatility_Lambda_1x(
     drift float
 );
 
-DROP TABLE IF EXISTS Stock_Investments_Lambda_2x;
+DROP TABLE IF EXISTS Stock_Investments_Volatility_Lambda_2x;
 CREATE TABLE Stock_Investments_Volatility_Lambda_2x(
     id int not null unique,
     ticker varchar(10),
@@ -209,7 +209,7 @@ CREATE TABLE Stock_Investments_Volatility_Lambda_2x(
     drift float
 );
 
-DROP TABLE IF EXISTS Stock_Investments_Lambda_3x;
+DROP TABLE IF EXISTS Stock_Investments_Volatility_Lambda_3x;
 CREATE TABLE Stock_Investments_Volatility_Lambda_3x(
     id int not null unique,
     ticker varchar(10),
@@ -220,7 +220,7 @@ CREATE TABLE Stock_Investments_Volatility_Lambda_3x(
     drift float
 );
 
-DROP TABLE IF EXISTS Stock_Investments_Lambda_4x;
+DROP TABLE IF EXISTS Stock_Investments_Volatility_Lambda_4x;
 CREATE TABLE Stock_Investments_Volatility_Lambda_4x(
     id int not null unique,
     ticker varchar(10),
@@ -231,7 +231,7 @@ CREATE TABLE Stock_Investments_Volatility_Lambda_4x(
     drift float
 );
 
-DROP TABLE IF EXISTS Stock_Investments_Lambda_5x;
+DROP TABLE IF EXISTS Stock_Investments_Volatility_Lambda_5x;
 CREATE TABLE Stock_Investments_Volatility_Lambda_5x(
     id int not null unique,
     ticker varchar(10),
