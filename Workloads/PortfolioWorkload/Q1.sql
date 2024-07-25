@@ -1,0 +1,6 @@
+SELECT PACKAGE(*) AS P
+FROM Stock_Investments_Volatility_1x
+SUCH THAT
+SUM(Price) <= 1000 AND
+SUM(Gain) >= -10 WITH PROBABILITY >= 0.95
+MAXIMIZE EXPECTED SUM(Gain)

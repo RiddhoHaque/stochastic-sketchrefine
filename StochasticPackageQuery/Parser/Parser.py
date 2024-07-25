@@ -648,7 +648,7 @@ class Parser:
         query = ''
         for line in query_lines:
             query += ' '
-            query += line
+            query += line.rstrip()
         return query
     
     def __insert_special_character_before_such_that(self, query: str) -> str:

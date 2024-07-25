@@ -1,5 +1,6 @@
 import random
 import numpy as np
+from numpy.random import SeedSequence
 from configparser import ConfigParser
 import psycopg2
 
@@ -90,6 +91,7 @@ tpch_attributes = [
     'id',
     'orderkey',
     'partkey',
+    'suppkey',
     'linenumber',
     'quantity',
     'quantity_mean',
@@ -129,13 +131,8 @@ portfolio_index = {
     'drift' : 4
 }
 
-class RandomSeedGenerator:
-    CURRENT_SEED = 2342123
-    @staticmethod
-    def getNextSeed():
-        random.seed(RandomSeedGenerator.CURRENT_SEED)
-        RandomSeedGenerator.CURRENT_SEED = random.randint(1, 10000000)
-        return RandomSeedGenerator.CURRENT_SEED
+INIT_SEED = SeedSequence(2342123)
+rng = np.random.default_rng(INIT_SEED)
 
 def create_portfolio_tuple_variant_datasets(
         interval, interval_string, cursor
@@ -154,8 +151,8 @@ def create_portfolio_tuple_variant_datasets(
                 tuple = dict()
                 for attribute in portfolio_attributes:
                     if attribute == 'id':
-                        row_number += 1
                         tuple[attribute] = str(row_number)
+                        row_number += 1
                     if attribute in portfolio_index:
                         if attribute == 'ticker':
                             tuple[attribute] = "'" + \
@@ -197,8 +194,8 @@ def create_portfolio_volatility_variant_datasets(
                 tuple = dict()
                 for attribute in portfolio_attributes:
                     if attribute == 'id':
-                        row_number += 1
                         tuple[attribute] = str(row_number)
+                        row_number += 1
                     if attribute in portfolio_index:
                         if attribute == 'ticker':
                             tuple[attribute] = "'" + \
@@ -226,10 +223,7 @@ def create_portfolio_volatility_coeff_variant_datasets(
 ):
     table_name = PORTFOLIO_TABLE_NAME + '_' + PORTFOLIO_LAMBDA_VARIANT_SUBSTRING \
         + '_' + volatility_coeff_string
-    seed = RandomSeedGenerator.getNextSeed()
-    random.seed(seed)
-    np.random.seed(seed)
-    volatility_coeffs = np.random.exponential(scale = (1/volatility_coeff),
+    volatility_coeffs = rng.exponential(scale = (1/volatility_coeff),
                                               size = 3457*730*2)
     is_first_line = True
     row_number = 0
@@ -273,20 +267,17 @@ def create_lineitem_tuple_variant_datasets(
         no_of_tuples, total_tuples, cursor):
     row_numbers = [i for i in range(total_tuples)]
     table_name = TPCH_TABLE_NAME + '_' + str(no_of_tuples)
-    seed = RandomSeedGenerator.getNextSeed()
-    random.seed(seed)
-    np.random.seed(seed)
-    random.shuffle(row_numbers)
+    rng.shuffle(row_numbers)
     selected_rows = [row_numbers[i]\
                       for i in range(no_of_tuples)]
     selected_rows.sort()
     row_number = 0
     rows_selected = 0
     next_selected_row = selected_rows[0]
-    quantity_means = np.random.normal(loc=0, scale=1, size=no_of_tuples)
-    quantity_variances = np.random.exponential(scale=0.5, size=no_of_tuples)
-    price_means = np.random.normal(loc=0, scale=1, size=no_of_tuples)
-    price_variances = np.random.exponential(scale=0.5, size=no_of_tuples)
+    quantity_means = rng.normal(loc=0, scale=1, size=no_of_tuples)
+    quantity_variances = rng.exponential(scale=0.5, size=no_of_tuples)
+    price_means = rng.normal(loc=0, scale=1, size=no_of_tuples)
+    price_variances = rng.exponential(scale=0.5, size=no_of_tuples)
     for line in open(TPCH_FILE, 'r').readlines():
         if row_number == next_selected_row:
             values = line.split("|")
@@ -331,20 +322,17 @@ def create_lineitem_variance_variant_datasets(
     row_numbers = [i for i in range(total_tuples)]
     table_name = TPCH_TABLE_NAME + '_' + TPCH_VARIANCE_VARIANT_SUBSTRING + \
         '_' + variance_substring
-    seed = RandomSeedGenerator.getNextSeed()
-    random.seed(seed)
-    np.random.seed(seed)
-    random.shuffle(row_numbers)
+    rng.shuffle(row_numbers)
     selected_rows = [row_numbers[i]\
                       for i in range(no_of_tuples)]
     selected_rows.sort()
     row_number = 0
     rows_selected = 0
     next_selected_row = selected_rows[0]
-    quantity_means = np.random.normal(loc=0, scale=1, size=no_of_tuples)
-    quantity_variances = np.random.exponential(scale=0.5, size=no_of_tuples)
-    price_means = np.random.normal(loc=0, scale=1, size=no_of_tuples)
-    price_variances = np.random.exponential(scale=0.5, size=no_of_tuples)
+    quantity_means = rng.normal(loc=0, scale=1, size=no_of_tuples)
+    quantity_variances = rng.exponential(scale=0.5, size=no_of_tuples)
+    price_means = rng.normal(loc=0, scale=1, size=no_of_tuples)
+    price_variances = rng.exponential(scale=0.5, size=no_of_tuples)
     for line in open(TPCH_FILE, 'r').readlines():
         if row_number == next_selected_row:
             values = line.split("|")
@@ -392,22 +380,19 @@ def create_lineitem_lambda_variant_datasets(
     table_name = TPCH_TABLE_NAME + '_' + TPCH_LAMBDA_VARIANT_SUBSTRING + \
                 '_' + lambda_string
     
-    seed = RandomSeedGenerator.getNextSeed()
-    random.seed(seed)
-    np.random.seed(seed)
-    random.shuffle(row_numbers)
+    rng.shuffle(row_numbers)
     selected_rows = [row_numbers[i]\
                       for i in range(no_of_tuples)]
     selected_rows.sort()
     row_number = 0
     rows_selected = 0
     next_selected_row = selected_rows[0]
-    quantity_means = np.random.normal(loc=0, scale=1, size=no_of_tuples)
-    quantity_variances = np.random.exponential(scale=0.5, size=no_of_tuples)
-    quantity_variance_coeffs = np.random.exponential(scale=(1/_lambda), size=no_of_tuples)
-    price_means = np.random.normal(loc=0, scale=1, size=no_of_tuples)
-    price_variances = np.random.exponential(scale=0.5, size=no_of_tuples)
-    price_variance_coeffs = np.random.exponential(scale=(1/_lambda), size=no_of_tuples)
+    quantity_means = rng.normal(loc=0, scale=1, size=no_of_tuples)
+    quantity_variances = rng.exponential(scale=0.5, size=no_of_tuples)
+    quantity_variance_coeffs = rng.exponential(scale=(1/_lambda), size=no_of_tuples)
+    price_means = rng.normal(loc=0, scale=1, size=no_of_tuples)
+    price_variances = rng.exponential(scale=0.5, size=no_of_tuples)
+    price_variance_coeffs = rng.exponential(scale=(1/_lambda), size=no_of_tuples)
     
     for line in open(TPCH_FILE, 'r').readlines():
         if row_number == next_selected_row:
@@ -475,7 +460,6 @@ for _ in range(len(TPCH_LAMBDA_VARIATIONS)):
 
 print('Populated lineitem relations with different variance coefficients')
 
-
 for _ in range(len(PORTFOLIO_TUPLE_VARIATIONS)):
     create_portfolio_tuple_variant_datasets(
         PORTFOLIO_TUPLE_VARIATIONS[_],
@@ -507,4 +491,3 @@ print('Populated portfolio relations with different scale factor for volatility 
 conn.commit()
 cursor.close()
 conn.close()
-

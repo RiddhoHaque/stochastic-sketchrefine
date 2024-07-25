@@ -1,3 +1,10 @@
+from PgConnection.PgConnectionUnitTest import PgConnectionUnitTest
+from OfflinePreprocessing.MeanAbsoluteDistanceUnitTest import MeanAbsoluteDistanceUnitTest
+from OfflinePreprocessing.PivotScanUnitTest import PivotScanUnitTest
+from ScenarioGenerator.ScenarioGeneratorUnitTest import ScenarioGeneratorUnitTest
+from ScenarioGenerator.TpchScenarioGenerators.PriceScenarioGeneratorUnitTest import PriceScenarioGeneratorUnitTest
+from ScenarioGenerator.TpchScenarioGenerators.QuantityScenarioGeneratorUnitTest import QuantityScenarioGeneratorUnitTest
+from ScenarioGenerator.PorfolioScenarioGenerator.GainScenarioGeneratorUnitTest import GainScenarioGeneratorUnitTest
 from StochasticPackageQuery.Constraints.ConstraintUnitTest import ConstraintUnitTest
 from StochasticPackageQuery.Constraints.RepeatConstraint.RepeatConstraintUnitTest import RepeatConstraintUnitTest
 from StochasticPackageQuery.Constraints.PackageSizeConstraint.PackageSizeConstraintUnitTest import PackageSizeConstraintUnitTest
@@ -11,6 +18,7 @@ from StochasticPackageQuery.Parser.ParserUnitTest import ParserUnitTest
 from StochasticPackageQuery.Parser.State.StateUnitTest import StateUnitTest
 from StochasticPackageQuery.Parser.Transition.TransitionUnitTest import TransitionUnitTest
 from Utils.UtilsUnitTest import UtilsUnitTest
+from ValueGenerator.ValueGeneratorUnitTest import ValueGeneratorUnitTest
 
 
 def UnitTestRunner():
@@ -27,4 +35,12 @@ def UnitTestRunner():
     TransitionUnitTest().main()
     StateUnitTest().main()
     ParserUnitTest().main()
+    PgConnectionUnitTest().main()
+    ScenarioGeneratorUnitTest().main()
+    PriceScenarioGeneratorUnitTest().main()
+    QuantityScenarioGeneratorUnitTest().main()
+    GainScenarioGeneratorUnitTest().main()
+    ValueGeneratorUnitTest().main()
+    MeanAbsoluteDistanceUnitTest().main()
+    PivotScanUnitTest().main()
     print('All unit tests passed')
