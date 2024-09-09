@@ -85,12 +85,6 @@ class GainScenarioGenerator(ScenarioGenerator):
                         curr_price = curr_price * np.exp(exponent + exponent_noise)
                         if curr_price > 2 * last_price:
                             curr_price = 2 * last_price
-                        '''
-                        if curr_price < 0.1 * last_price:
-                            curr_price = (0.1 + noises[scenario_number][counter])\
-                                * last_price
-                            last_drift *= -0.1
-                        '''
                         gains[tuple_numbers[counter]].append(curr_price - last_price)
                         counter += 1
                 
@@ -133,12 +127,6 @@ class GainScenarioGenerator(ScenarioGenerator):
                     curr_price = curr_price * np.exp(exponent + exponent_noise)
                     if curr_price > 2 * last_price:
                         curr_price = 2 * last_price
-                    '''
-                    if curr_price < 0.1 * last_price:
-                        curr_price = (0.1 + noises[scenario_number][counter])\
-                            * last_price
-                        last_drift *= -0.1
-                    '''
                     gains[tuple_numbers[counter]].append(
                             curr_price - last_price)
                     counter += 1

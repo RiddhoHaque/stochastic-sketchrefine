@@ -7,4 +7,8 @@ class SeedManager:
         SeedManager.INIT_SEED += 1727
         return SeedManager.INIT_SEED
 
+    @staticmethod
+    def reinitialize_seed() -> None:
+        SeedManager.INIT_SEED = \
+            Hyperparameters.INIT_SEED
 

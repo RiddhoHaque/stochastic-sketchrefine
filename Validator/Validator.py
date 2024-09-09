@@ -33,15 +33,18 @@ class Validator:
                 base_predicate += " or "
             base_predicate += " id=" + str(id)
         ids_with_multiplicities.sort()
-        scenarios = \
-            self.__dbInfo.get_variable_generator_function(
-                attribute)(
-                    relation=self.__query.get_relation(),
-                    base_predicate=base_predicate
-                ).generate_scenarios(
-                    seed=Hyperparameters.VALIDATION_SEED,
-                    no_of_scenarios = self.__no_of_validation_scenarios,
-                )
+        if len(package_dict) > 0:
+            scenarios = \
+                self.__dbInfo.get_variable_generator_function(
+                    attribute)(
+                        relation=self.__query.get_relation(),
+                        base_predicate=base_predicate
+                    ).generate_scenarios(
+                        seed=Hyperparameters.VALIDATION_SEED,
+                        no_of_scenarios = self.__no_of_validation_scenarios,
+                    )
+        else:
+            scenarios = []
         return scenarios, ids_with_multiplicities
 
 
@@ -52,6 +55,9 @@ class Validator:
                 return -math.inf
             else:
                 return math.inf
+        
+        if len(package_dict) == 0:
+            return 0
             
         attribute = \
             self.__query.get_objective().get_attribute_name()
@@ -63,9 +69,11 @@ class Validator:
         for tuple_values in scenarios:
             _, multiplicity = ids_with_multiplicities[idx]
             idx += 1
-            objective_value += np.sum(tuple_values)*multiplicity
+            #print('Validation Average:', np.average(tuple_values))
+            #print('Validation multiplicity:', multiplicity)
+            objective_value += np.average(tuple_values)*multiplicity
         
-        return objective_value / self.__no_of_validation_scenarios
+        return objective_value
     
 
     def get_expected_sum_constraint_feasibility(
@@ -73,6 +81,7 @@ class Validator:
             expected_sum_constraint: ExpectedSumConstraint) -> bool:
         if package_dict is None:
             return True
+        
         attribute = expected_sum_constraint.get_attribute_name()
         scenarios, ids_with_multiplicities = \
             self.__get_scenarios_and_ids(
@@ -98,6 +107,34 @@ class Validator:
         return expected_sum <= \
             expected_sum_constraint.get_sum_limit()
     
+
+    def get_var_among_validation_scenarios(
+        self, package_dict,
+        var_constraint: VaRConstraint
+    ) -> float:
+        attribute = var_constraint.get_attribute_name()
+        scenarios, ids_with_multiplicities = \
+            self.__get_scenarios_and_ids(
+                package_dict, attribute
+            )
+        
+        scenario_scores = []
+        for _ in range(self.__no_of_validation_scenarios):
+            idx = 0
+            scenario_score = 0
+            for __, multiplicity in ids_with_multiplicities:
+                scenario_score += \
+                    scenarios[idx][_] * multiplicity
+                idx += 1
+            scenario_scores.append(
+                scenario_score
+            )
+        scenario_scores.sort()
+        scenarios_to_consider = \
+            int(np.floor((var_constraint.get_probability_threshold()*\
+                      self.__no_of_validation_scenarios)))
+        return scenario_scores[scenarios_to_consider]
+
 
     def get_var_constraint_satisfaction(
             self, package_dict,
@@ -236,6 +273,7 @@ class Validator:
                     return False
         return True
 
+
     def is_package_1_pm_epsilon_approximate(
         self, package_dict: dict,
         epsilon: float, upper_bound: float
@@ -250,9 +288,13 @@ class Validator:
             self.get_validation_objective_value(
                 package_dict
             )
-
+        print('Objective value is', objective_value)
         if objective.get_objective_type() == \
             ObjectiveType.MAXIMIZATION:
+            print('Objective value needs to be at least',
+                  (1-epsilon) * upper_bound)
+            print('Current objective_value is',
+                  objective_value)
             return objective_value >= \
                 (1 - epsilon) * upper_bound
         

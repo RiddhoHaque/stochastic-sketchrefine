@@ -3,7 +3,6 @@ from numpy.random import SFC64, SeedSequence, Generator
 
 from DbInfo.DbInfo import DbInfo
 from Hyperparameters.Hyperparameters import Hyperparameters
-from OfflinePreprocessing.MonotonicDeque import MonotonicDeque
 from PgConnection.PgConnection import PgConnection
 from ScenarioGenerator.ScenarioGenerator import ScenarioGenerator
 from SeedManager.SeedManager import SeedManager
@@ -36,6 +35,7 @@ class DistPartition:
             self.__values[det_attr] = \
                 self.__get_values(0, self.__total_tuples-1,
                                   det_attr)
+            print('Created values for', det_attr)
         
         self.__scenarios = dict()
         for stoch_attr in self.__dbInfo.get_stochastic_attributes():
@@ -45,6 +45,7 @@ class DistPartition:
             self.__scenarios[stoch_attr] = \
                 self.__get_scenarios(0, self.__total_tuples-1,
                                      stoch_attr)
+            print('Created Scenarios for', stoch_attr)
 
 
     def __get_values(
@@ -60,6 +61,7 @@ class DistPartition:
                 str(interval_end),
             attribute=attribute
         ).get_values()
+    
     
     def __get_scenarios(
             self,
@@ -78,6 +80,7 @@ class DistPartition:
             no_of_scenarios = Hyperparameters.MAD_NO_OF_SAMPLES
         )
 
+    
     def __get_number_of_tuples(self) -> int:
         sql_query = \
             "SELECT COUNT(*) FROM " + self.__relation\
@@ -85,9 +88,9 @@ class DistPartition:
         PgConnection.Execute(sql_query)
         return PgConnection.Fetch()[0][0]
     
+    
     def __mean_absolute_relative_difference(
-        self, v1: float, v2: float
-    ):
+        self, v1: float, v2: float):
         if v1 > v2:
             if v2 > 0:
                 return (v1-v2)/v2
@@ -100,6 +103,13 @@ class DistPartition:
         elif v1 == 0:
             return (v2-v1)*99999
         return -(v2-v1)/v1
+    
+
+    def __mean_absolute_difference(
+        self, v1: float, v2: float):
+        if v1 > v2:
+            return (v1-v2)
+        return (v2-v1)
 
     
     def __get_distance_id_pairs(
@@ -110,25 +120,25 @@ class DistPartition:
             attribute):
             for id in ids:
                 distance_id_pairs.append(
-                    (self.__mean_absolute_relative_difference(
+                    (self.__mean_absolute_difference(
                         self.__values[attribute][id][0],
                         self.__values[attribute][pivot][0]),
                     id)
                 )
         else:
             for id in ids:
-                
                 distance_id_pairs.append(
                     (np.average(
-                        [self.__mean_absolute_relative_difference(
+                        [self.__mean_absolute_difference(
                             self.__scenarios[attribute][id][_],
-                            self.__scenarios[attribute][id][_])
+                            self.__scenarios[attribute][pivot][_])
                         for _ in range(len(
                             self.__scenarios[attribute][id]))]
                     ), id)
                 )
         distance_id_pairs.sort()
         return distance_id_pairs
+    
     
     def get_ids_with_increasing_distances(
             self, attribute: str, ids: list[int]):
@@ -141,9 +151,11 @@ class DistPartition:
                                     farthest_tuple, attribute)
         return id_distance_pairs
 
+    
     def get_scenario_values(self, attr: str, tuple_id: int):
         return self.__scenarios[attr][tuple_id]
 
+    
     def partition(self, ids: list[int],
                   depth = 1):
         if len(ids) == 1:
@@ -167,16 +179,19 @@ class DistPartition:
         attribute_with_highest_ratio = None
 
         for attribute in attributes:
+            #print('Pivotscanning for', attribute)
             distances_and_ids = self.get_ids_with_increasing_distances(
                     attribute, ids
                 )
+            #print('Pivotscan done')
             farthest_distance, _ = distances_and_ids[-1]
-            if farthest_distance*2 / self.__diameter_thresholds[
+            #print('Farthest distance:', farthest_distance)
+            if farthest_distance / self.__diameter_thresholds[
                 attribute] > current_highest_ratio:
                 distances_and_ids_for_widest_attr = \
                     distances_and_ids
                 attribute_with_highest_ratio = attribute
-                current_highest_ratio = farthest_distance*2 / \
+                current_highest_ratio = farthest_distance / \
                     self.__diameter_thresholds[attribute]
 
         if len(ids) > self.__size_threshold:
@@ -185,7 +200,7 @@ class DistPartition:
             temp_ids = []
             for _, id in distances_and_ids_for_widest_attr:
                 temp_ids.append(id)
-                if len(temp_ids) == (len(ids)//2 + 1):
+                if len(temp_ids) == self.__size_threshold:
                     self.partition(temp_ids, depth+1)
                     temp_ids = []
             if len(temp_ids) > 0:
@@ -196,17 +211,20 @@ class DistPartition:
             print('Diameter threshold exceeded for ', attribute_with_highest_ratio,
                   'with ratio', current_highest_ratio, 'at depth', depth, 
                   'with', len(ids), 'tuples')
-            temp_ids_1 = []
-            temp_ids_2 = []
+            temp_ids = []
+            multiple = 1
+            _, pivot = distances_and_ids_for_widest_attr[0]
             for distance, id in distances_and_ids_for_widest_attr:
-                if distance*2 > self.__diameter_thresholds[attribute_with_highest_ratio]:
-                    temp_ids_1.append(id)
-                else:
-                    temp_ids_2.append(id)
-            if len(temp_ids_1) > 0:
-                self.partition(temp_ids_1, depth+1)
-            if len(temp_ids_2) > 0:
-                self.partition(temp_ids_2, depth+1)
+                if distance > multiple*self.__diameter_thresholds[attribute_with_highest_ratio]:
+                    self.partition(temp_ids, depth+1)
+                    while distance > multiple*self.__diameter_thresholds[
+                        attribute_with_highest_ratio]:
+                        multiple += 1
+                    temp_ids = []
+                temp_ids.append(id)
+            
+            if len(temp_ids) > 0:
+                self.partition(temp_ids, depth+1)
             return
 
         for id in ids:
@@ -216,5 +234,6 @@ class DistPartition:
         print('No. of partitions formed:', self.__no_of_partitions)
         print('Tuples whose partitions are found:', self.__tuples_whose_partitions_are_found)
 
+    
     def get_no_of_partitions(self):
         return self.__no_of_partitions

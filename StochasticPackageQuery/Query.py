@@ -149,7 +149,7 @@ class Query:
             raise Exception
         self.__constraints[-1].add_character_to_percentage_of_scenarios(char)
 
-    def get_constraints(self):
+    def get_constraints(self) -> list[Constraint]:
         return self.__constraints
 
     def set_objective(self, objective: Objective):

@@ -17,6 +17,7 @@ from StochasticPackageQuery.QueryUnitTest import QueryUnitTest
 from StochasticPackageQuery.Parser.ParserUnitTest import ParserUnitTest
 from StochasticPackageQuery.Parser.State.StateUnitTest import StateUnitTest
 from StochasticPackageQuery.Parser.Transition.TransitionUnitTest import TransitionUnitTest
+from Utils.HeapUnitTest import HeapUnitTest
 from Utils.UtilsUnitTest import UtilsUnitTest
 from ValueGenerator.ValueGeneratorUnitTest import ValueGeneratorUnitTest
 
@@ -43,4 +44,5 @@ def UnitTestRunner():
     ValueGeneratorUnitTest().main()
     MeanAbsoluteDistanceUnitTest().main()
     PivotScanUnitTest().main()
+    HeapUnitTest().main()
     print('All unit tests passed')
