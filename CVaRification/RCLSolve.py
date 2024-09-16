@@ -1166,7 +1166,7 @@ class RCLSolve:
                 
                 if all_constraints_violated:
                     if self.__query.get_objective().get_objective_type() == \
-                        Objective.MAXIMIZATION:
+                        ObjectiveType.MAXIMIZATION:
                         
                         if validation_objective_value < objective_upper_bound:
                             ...
@@ -1313,7 +1313,7 @@ class RCLSolve:
             print('Probabilistically unconstrained package:',
                 probabilistically_unconstrained_package)
             if probabilistically_unconstrained_package is None:
-                self.__metrics.end_execution(0)
+                self.__metrics.end_execution(0, 0)
                 return None
         
             probabilistically_unconstrained_package_with_indices = \
@@ -1339,7 +1339,8 @@ class RCLSolve:
             probabilistically_unconstrained_package):
             print('Probabilistically unconstrained package'
                   'is validation feasible')
-            self.__metrics.end_execution(objective_upper_bound)
+            self.__metrics.end_execution(
+                objective_upper_bound, 0)
             return (probabilistically_unconstrained_package,
                     objective_upper_bound)
 
@@ -1401,7 +1402,8 @@ class RCLSolve:
                     get_found_appropriate_package():
                     self.__metrics.end_execution(
                         coefficient_search_result.\
-                            get_objective_value()
+                            get_objective_value(),
+                        no_of_scenarios
                     )
                     return (
                         coefficient_search_result.get_package(),
@@ -1432,7 +1434,8 @@ class RCLSolve:
                     get_found_appropriate_package():
                     self.__metrics.end_execution(
                         threshold_search_result.\
-                            get_objective_value()
+                            get_objective_value(),
+                        no_of_scenarios
                     )
                     return (
                         threshold_search_result.get_package(),
@@ -1443,15 +1446,22 @@ class RCLSolve:
                 objective_upper_bound = \
                     threshold_search_result.get_objective_upper_bound()
                 
+                for ind in range(len(cvar_upper_bounds)):
+                    if cvar_upper_bounds[ind] <\
+                        cvar_lower_bounds[ind]:
+                        cvar_upper_bounds[ind] -= self.__bisection_threshold
+                    else:
+                        cvar_upper_bounds[ind] += self.__bisection_threshold
+
                 for ind in range(len(min_no_of_scenarios_to_consider)):
                     if min_no_of_scenarios_to_consider[ind] <\
                         max_no_of_scenarios_to_consider[ind]:
-                        min_no_of_scenarios_to_consider[ind] += 1
+                        max_no_of_scenarios_to_consider[ind] -= 1
             
             no_of_scenarios *= 2
             if no_of_scenarios >= self.__no_of_validation_scenarios:
                 no_of_scenarios = self.__no_of_validation_scenarios
-        self.__metrics.end_execution(0)
+        self.__metrics.end_execution(0, no_of_scenarios)
         return (None, 0.0)
     
 

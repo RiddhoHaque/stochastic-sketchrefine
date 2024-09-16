@@ -220,7 +220,6 @@ class Validator:
             self.get_var_constraint_satisfaction(
                 package_dict, var_constraint
             )
-        print('probability:', probability)
         return (
             probability >= \
             var_constraint.get_probability_threshold()
@@ -288,13 +287,8 @@ class Validator:
             self.get_validation_objective_value(
                 package_dict
             )
-        print('Objective value is', objective_value)
         if objective.get_objective_type() == \
             ObjectiveType.MAXIMIZATION:
-            print('Objective value needs to be at least',
-                  (1-epsilon) * upper_bound)
-            print('Current objective_value is',
-                  objective_value)
             return objective_value >= \
                 (1 - epsilon) * upper_bound
         

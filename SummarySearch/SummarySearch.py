@@ -739,7 +739,8 @@ class SummarySearch:
               probabilistically_unconstrained_package)
         
         if probabilistically_unconstrained_package is None:
-            self.__metrics.end_execution(0)
+            self.__metrics.end_execution(
+                0, 0)
             return None
 
         upper_bound = \
@@ -758,7 +759,7 @@ class SummarySearch:
                     #    package_dict=probabilistically_unconstrained_package,
                     #    var_constraint=constraint
                     #), 'of scenarios')
-            self.__metrics.end_execution(upper_bound)
+            self.__metrics.end_execution(upper_bound, 0)
             return (probabilistically_unconstrained_package,
                     upper_bound)
 
@@ -795,7 +796,8 @@ class SummarySearch:
                             package
                         )
                     self.__metrics.end_execution(
-                        validation_objective_value)
+                        validation_objective_value,
+                        no_of_scenarios)
                     return (package, 
                             validation_objective_value)
                 else:

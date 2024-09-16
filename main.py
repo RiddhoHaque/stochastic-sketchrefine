@@ -8,6 +8,7 @@ from Naive.Naive import Naive
 from SummarySearch.SummarySearch import SummarySearch
 from OfflinePreprocessing.DistPartition import DistPartition
 from PgConnection.PgConnection import PgConnection
+from QueryHardness.HardnessEvaluator import HardnessEvaluator
 from ScenarioGenerator.PorfolioScenarioGenerator.GainScenarioGenerator import GainScenarioGenerator
 from ScenarioGenerator.TpchScenarioGenerators.PriceScenarioGenerator import PriceScenarioGenerator
 from SeedManager.SeedManager import SeedManager
@@ -17,6 +18,7 @@ from StochasticPackageQuery.Parser.Parser import Parser
 from Utils.Stochasticity import Stochasticity
 from UnitTestRunner import UnitTestRunner
 from ValueGenerator.ValueGenerator import ValueGenerator
+from Validator.Validator import Validator
 import warnings
 import time
 import os
@@ -55,14 +57,27 @@ if __name__ == '__main__':
             rclSolve = RCLSolve(
                 query=query, linear_relaxation=False,
                 dbInfo=PortfolioInfo,
-                init_no_of_scenarios=1000,
+                init_no_of_scenarios=100,
                 no_of_validation_scenarios=1000000,
                 approximation_bound=0.02,
                 sampling_tolerance=0.2,
                 bisection_threshold=0.01,
             )
-            rclSolve.solve()
-            rclMetrics = rclSolve.get_metrics()
+            eval = HardnessEvaluator(
+                query=query,
+                solver=rclSolve,
+                dbInfo=PortfolioInfo,
+                validator= Validator(
+                    query=query, dbInfo=PortfolioInfo,
+                    no_of_validation_scenarios=10000,
+                ),
+                foraging_period=2,
+            )
+
+            eval.log_hardness(iter+1, 'Porfolio')
+            #rclSolve.solve()
+            #rclMetrics = rclSolve.get_metrics()
+            '''
             lpRcl = RCLSolve(
                 query=query, linear_relaxation=True,
                 dbInfo=PortfolioInfo,
@@ -94,10 +109,9 @@ if __name__ == '__main__':
                 approximation_bound=0.02)
             lpSummarySearch.solve()
             lpSearchMetrics = lpSummarySearch.get_metrics()
-            
+            '''
             iter += 1
-            print('Query', str(iter), ':')
-            rclMetrics.log()
-            summarySearchMetrics.log()
-            lpRclMetrics.log()
-            lpSearchMetrics.log()
+            #rclMetrics.log()
+            #summarySearchMetrics.log()
+            #lpRclMetrics.log()
+            #lpSearchMetrics.log()
