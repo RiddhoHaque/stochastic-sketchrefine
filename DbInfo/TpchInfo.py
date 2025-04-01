@@ -43,3 +43,7 @@ class TpchInfo(DbInfo):
             return Hyperparameters.DIAMETER_THRESHOLD_TPCH_QUANTITY
         if attribute == 'tax':
             return Hyperparameters.DIAMETER_THRESHOLD_TPCH_TAX
+
+    @staticmethod
+    def has_inter_tuple_correlations() -> bool:
+        return False

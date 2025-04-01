@@ -29,3 +29,7 @@ class DbInfo:
         attribute: str
     ) -> float:
         return 0
+    
+    @staticmethod
+    def has_inter_tuple_correlations() -> bool:
+        return False

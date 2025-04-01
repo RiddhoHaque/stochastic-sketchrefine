@@ -250,7 +250,7 @@ class SummarySearch:
         np.random.shuffle(scenarios)
         scenario_index = 0
         
-        for summary_index in range(no_of_summaries):
+        for summary_index in range(int(no_of_summaries)):
             scenarios_per_summary = \
                 self.__get_scenarios_for_this_summary(
                     alpha, no_of_scenarios,

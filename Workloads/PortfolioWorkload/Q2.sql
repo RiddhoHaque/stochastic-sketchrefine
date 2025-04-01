@@ -1,6 +1,6 @@
 SELECT PACKAGE(*) AS P
-FROM Stock_Investments_Volatility_1x
+FROM Stock_Investments_Half
 SUCH THAT
-SUM(Price) <= 500 AND
-SUM(Gain) >= 350 WITH PROBABILITY >= 0.95
+SUM(Price) <= 1000 AND
+SUM(Gain) >= 600 WITH PROBABILITY >= 0.97
 MAXIMIZE EXPECTED SUM(Gain)

@@ -1,0 +1,6 @@
+Pre-computing Scenarios
+Partitioning
+Partition Table Creation
+Representative Selecion
+Representative Histogram Estimation
+Correlation Coefficient Estimation

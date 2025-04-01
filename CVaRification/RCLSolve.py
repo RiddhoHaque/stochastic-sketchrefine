@@ -67,8 +67,7 @@ class RCLSolve:
         self.__feasible_no_of_scenarios_to_store = \
             int(np.floor(
                 (0.40*psutil.virtual_memory().available)/\
-                (64*self.__no_of_vars)
-            ))
+                (64*self.__no_of_vars)))
 
         self.__vars = []
         
@@ -651,19 +650,23 @@ class RCLSolve:
 
         if objective.get_objective_type() == \
             ObjectiveType.MAXIMIZATION:
-            print('Objective Value is', objective_value)
-            print('Upper bound is', objective_upper_bound)
-            print('Epsilon is', self.__approximation_bound)
-            print('Objective Value needs to be at least',
-                  (1 - self.__approximation_bound) *
-                    objective_upper_bound)
-            return objective_value >= \
+            if objective_upper_bound >= 0:
+                return objective_value >= \
+                    (1 - self.__approximation_bound) *\
+                        objective_upper_bound
+            else:
+                return objective_value >= \
+                    (1 + self.__approximation_bound) *\
+                        objective_upper_bound
+        
+        if objective_upper_bound >= 0:
+            return objective_value <= \
+                (1 + self.__approximation_bound) *\
+                    objective_upper_bound
+
+        return objective_value <= \
                 (1 - self.__approximation_bound) *\
                     objective_upper_bound
-        
-        return objective_value <= \
-            (1 + self.__approximation_bound) *\
-                objective_upper_bound
     
 
     def __get_scenario_scores_ascending(
@@ -1163,19 +1166,6 @@ class RCLSolve:
                         result.set_objective_value(
                             validation_objective_value)
                         return result
-                
-                if all_constraints_violated:
-                    if self.__query.get_objective().get_objective_type() == \
-                        ObjectiveType.MAXIMIZATION:
-                        
-                        if validation_objective_value < objective_upper_bound:
-                            ...
-                            #objective_upper_bound = validation_objective_value
-                        
-                    else:
-                        if validation_objective_value > objective_upper_bound:
-                            ...
-                            #objective_upper_bound = validation_objective_value
 
         result = CVaRificationSearchResults()
         result.set_objective_upper_bound(objective_upper_bound)
@@ -1237,9 +1227,15 @@ class RCLSolve:
                     trivial_constraints.append(risk_constraint_index)
                     cvar_lower_bounds.append(constraint.get_sum_limit())
                     cvar_upper_bounds.append(constraint.get_sum_limit())
-                    no_of_scenarios_to_consider =\
-                        np.floor(constraint.get_percentage_of_scenarios()\
-                                 *no_of_scenarios/100.0)
+                    if constraint.is_cvar_constraint():
+                        no_of_scenarios_to_consider =\
+                            int(np.floor(constraint.get_percentage_of_scenarios()\
+                                    *no_of_scenarios/100.0))
+                    elif constraint.is_var_constraint():
+                        no_of_scenarios_to_consider =\
+                            int(np.ceil(
+                                (1-constraint.get_probability_threshold()
+                            )*no_of_scenarios))
                     min_no_of_scenarios_to_consider.append(
                         no_of_scenarios_to_consider
                     )
@@ -1427,7 +1423,7 @@ class RCLSolve:
                         can_add_scenarios
                     )
 
-                if threshold_search_result.\
+                if can_add_scenarios and threshold_search_result.\
                     get_needs_more_scenarios():
                     break
                 if threshold_search_result.\

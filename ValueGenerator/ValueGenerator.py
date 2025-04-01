@@ -1,4 +1,5 @@
 from PgConnection.PgConnection import PgConnection
+from Utils.Relation_Prefixes import Relation_Prefixes
 
 
 class ValueGenerator:
@@ -22,4 +23,19 @@ class ValueGenerator:
         sql_query += " ORDER BY id;"
         PgConnection.Execute(sql_query)
         return PgConnection.Fetch()
-        
+    
+    def get_values_from_partition(
+        self, partition_id: int
+    ):
+        self.__relation = self.__relation +\
+            ' AS r INNER JOIN ' + \
+                Relation_Prefixes.PARTITION_RELATION_PREFIX +\
+                    self.__relation + ' AS p ON r.id=p.tuple_id'
+
+        if len(self.__base_predicate) > 0:
+            self.__base_predicate += ' AND '
+        self.__base_predicate += 'p.partition_id = ' + str(
+            partition_id
+        )
+
+        return self.get_values()

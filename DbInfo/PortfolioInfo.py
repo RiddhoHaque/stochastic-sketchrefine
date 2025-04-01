@@ -36,3 +36,7 @@ class PortfolioInfo(DbInfo):
             return Hyperparameters.DIAMETER_THRESHOLD_PORTFOLIO_GAIN
         if attribute == 'price':
             return Hyperparameters.DIAMETER_THRESHOLD_PORTFOLIO_PRICE
+        
+    @staticmethod
+    def has_inter_tuple_correlations() -> bool:
+        return True

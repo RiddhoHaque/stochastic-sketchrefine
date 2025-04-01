@@ -3,6 +3,7 @@ import warnings
 from numpy.random import SFC64, SeedSequence, Generator
 from PgConnection.PgConnection import PgConnection
 from ScenarioGenerator.ScenarioGenerator import ScenarioGenerator
+from Utils.Relation_Prefixes import Relation_Prefixes
 
 
 class GainScenarioGenerator(ScenarioGenerator):
@@ -16,12 +17,14 @@ class GainScenarioGenerator(ScenarioGenerator):
             self.__base_predicate = '1=1'
 
     def __get_info(self):
-        sql_query = 'select min(ticker), min(sell_after),'\
-            ' min(price), min(volatility), '\
-            ' min(volatility_coeff), min(drift) from '\
+        sql_query = 'select ticker, sell_after,'\
+            ' price, volatility, '\
+            ' volatility_coeff, drift from '\
             + self.__relation +\
             ' where ' + self.__base_predicate + \
-            ' group by id order by id;'
+            ' order by id;'
+        if self.__relation!= 'stock_investments_half':
+            print('SQL Query:', sql_query)
         PgConnection.Execute(sql_query)
         return PgConnection.Fetch()
 
@@ -30,7 +33,7 @@ class GainScenarioGenerator(ScenarioGenerator):
         for char in str:
             hashed_value = hashed_value * 7727
             hashed_value += ord(char)
-            hashed_value %= 2593697
+            hashed_value %= 2593697387
         return hashed_value
 
     def generate_scenarios(self, seed, no_of_scenarios):
@@ -134,3 +137,21 @@ class GainScenarioGenerator(ScenarioGenerator):
             sell_after_dates.clear()
         return gains
 
+
+    def generate_scenarios_from_partition(
+        self, seed: int, no_of_scenarios: int,
+        partition_id: int
+    ) -> list[list[float]]:
+        self.__relation = self.__relation +\
+            ' AS r INNER JOIN ' + \
+                Relation_Prefixes.PARTITION_RELATION_PREFIX +\
+                self.__relation + ' AS p ON r.id=p.tuple_id'
+        if len(self.__base_predicate) > 0:
+            self.__base_predicate += ' AND '
+        self.__base_predicate += 'p.partition_id = ' + str(
+            partition_id
+        )
+
+        return self.generate_scenarios(
+            seed, no_of_scenarios
+        ) 
