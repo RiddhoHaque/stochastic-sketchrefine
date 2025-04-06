@@ -44,7 +44,7 @@ where users should replace:
 
 Example Command:
 
-python OfflinePreprocessing/DistPartition.py portfolio distpartition
+$ python OfflinePreprocessing/DistPartition.py portfolio distpartition
 
 The logs will show the runtimes needed for partitioning and the entire offline preprocessing phase for e.
 
