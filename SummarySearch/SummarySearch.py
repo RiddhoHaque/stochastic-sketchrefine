@@ -596,7 +596,7 @@ class SummarySearch:
             (no_of_scenarios % no_of_summaries):
             scenarios_per_summary += 1
         return int(np.ceil(
-            alpha*scenarios_per_summary))
+            scenarios_per_summary))
 
 
     def __get_no_of_scenarios_considered(
