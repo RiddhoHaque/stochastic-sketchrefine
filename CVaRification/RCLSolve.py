@@ -984,33 +984,33 @@ class RCLSolve:
                                     cvar_mid_thresholds[risk_constraint_index]
                     risk_constraint_index += 1
 
-                if all_constraints_satisfied:
-                    if self.__is_objective_value_enough(
-                        validation_objective_value, objective_upper_bound
-                    ):
-                        result = CVaRificationSearchResults()
-                        result.set_found_appropriate_package(True)
-                        result.set_package(package)
-                        result.set_objective_value(
-                            validation_objective_value)
-                        return result
+            if all_constraints_satisfied:
+                if self.__is_objective_value_enough(
+                    validation_objective_value, objective_upper_bound
+                ):
+                    result = CVaRificationSearchResults()
+                    result.set_found_appropriate_package(True)
+                    result.set_package(package)
+                    result.set_objective_value(
+                        validation_objective_value)
+                    return result
                 
-                if all_constraints_violated:
-                    print('All constraints were violated')
-                    if self.__query.get_objective().get_objective_type() ==\
-                        ObjectiveType.MAXIMIZATION:
+            if all_constraints_violated:
+                print('All constraints were violated')
+                if self.__query.get_objective().get_objective_type() ==\
+                    ObjectiveType.MAXIMIZATION:
 
-                        if validation_objective_value < objective_upper_bound:
-                            print('Updating objective upper bound to',
-                                  validation_objective_value)
-                            #objective_upper_bound = validation_objective_value
+                    if validation_objective_value < objective_upper_bound:
+                        print('Updating objective upper bound to',
+                            validation_objective_value)
+                        #objective_upper_bound = validation_objective_value
                     
                     
                     else:
                         if validation_objective_value > objective_upper_bound:
                             print('Updating objective upper bound to',
-                                  validation_objective_value)
-                            #objective_upper_bound = validation_objective_value
+                                validation_objective_value)
+                                #objective_upper_bound = validation_objective_value
             
         result = CVaRificationSearchResults()
         result.set_objective_upper_bound(
@@ -1018,7 +1018,6 @@ class RCLSolve:
         result.set_cvar_thresholds(
             cvar_lower_bounds)
         return result
-            
 
     def __cvar_coefficient_search(
         self, no_of_scenarios: int,
@@ -1156,16 +1155,16 @@ class RCLSolve:
                                         -= 1
                     risk_constraint_index += 1
 
-                if all_constraints_satisfied:
-                    if self.__is_objective_value_enough(
-                        validation_objective_value, objective_upper_bound
-                    ):
-                        result = CVaRificationSearchResults()
-                        result.set_found_appropriate_package(True)
-                        result.set_package(package)
-                        result.set_objective_value(
-                            validation_objective_value)
-                        return result
+            if all_constraints_satisfied:
+                if self.__is_objective_value_enough(
+                    validation_objective_value, objective_upper_bound
+                ):
+                    result = CVaRificationSearchResults()
+                    result.set_found_appropriate_package(True)
+                    result.set_package(package)
+                    result.set_objective_value(
+                        validation_objective_value)
+                    return result
 
         result = CVaRificationSearchResults()
         result.set_objective_upper_bound(objective_upper_bound)
