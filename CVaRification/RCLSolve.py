@@ -1006,11 +1006,11 @@ class RCLSolve:
                         #objective_upper_bound = validation_objective_value
                     
                     
-                    else:
-                        if validation_objective_value > objective_upper_bound:
-                            print('Updating objective upper bound to',
-                                validation_objective_value)
-                                #objective_upper_bound = validation_objective_value
+                else:
+                    if validation_objective_value > objective_upper_bound:
+                        print('Updating objective upper bound to',
+                            validation_objective_value)
+                    #objective_upper_bound = validation_objective_value
             
         result = CVaRificationSearchResults()
         result.set_objective_upper_bound(
