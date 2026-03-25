@@ -1,6 +1,7 @@
 import numpy as np
 from numpy.random import SFC64, SeedSequence, Generator
 
+from Hyperparameters.Hyperparameters import Hyperparameters
 from PgConnection.PgConnection import PgConnection
 from ScenarioGenerator.ScenarioGenerator import ScenarioGenerator
 from SeedManager.SeedManager import SeedManager
@@ -47,7 +48,6 @@ class RepresentativeScenarioGeneratorWithoutCorrelation(ScenarioGenerator):
 
         for tuple in tuples:
             representatives.append(tuple[0])
-        
         return representatives    
 
 
@@ -67,6 +67,7 @@ class RepresentativeScenarioGeneratorWithoutCorrelation(ScenarioGenerator):
                 relation=self.__relation,
                 base_predicate='id='+str(representative)
             )
+            
             rep_scenarios = scenario_generator.generate_scenarios(
                 seed=SeedManager.get_next_seed(),
                 no_of_scenarios=no_of_scenarios*\
@@ -74,9 +75,11 @@ class RepresentativeScenarioGeneratorWithoutCorrelation(ScenarioGenerator):
             )
 
             rep_scenarios = np.reshape(
-                rep_scenarios, (self.__duplicates[duplicate_index],
-                                no_of_scenarios))
-            
+                rep_scenarios,
+                (self.__duplicates[duplicate_index],
+                no_of_scenarios)
+            )
+
             for scenario in rep_scenarios:
                 scenarios.append(scenario)
             

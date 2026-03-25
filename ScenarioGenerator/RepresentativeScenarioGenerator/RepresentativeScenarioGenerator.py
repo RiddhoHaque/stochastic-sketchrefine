@@ -3,32 +3,39 @@ import numpy as np
 from numpy.random import SFC64, SeedSequence, Generator
 from scipy.stats import norm
 
+from DbInfo.DbInfo import DbInfo
+from Hyperparameters.Hyperparameters import Hyperparameters
 from PgConnection.PgConnection import PgConnection
 from ScenarioGenerator.ScenarioGenerator import ScenarioGenerator
+from ScenarioGenerator.RepresentativeScenarioGenerator.RepresentativeScenarioGeneratorWithoutCorrelation import RepresentativeScenarioGeneratorWithoutCorrelation
+from SeedManager.SeedManager import SeedManager
 from Utils.Relation_Prefixes import Relation_Prefixes
 
 
 class RepresentativeScenarioGenerator(ScenarioGenerator):
+    __cached_histograms = dict()
 
     def __init__(self, 
                  relation: str,
                  attr: str,
+                 dbInfo: DbInfo,
                  base_predicate = '',
                  duplicate_vector = [],
                  correlation_coeff = [0.01]) -> None:
         self.__relation = relation
         self.__attribute = attr
+        self.__dbInfo = dbInfo
         self.__base_predicate = base_predicate
         self.__duplicate_vector = duplicate_vector
         self.__correlation_coeff = correlation_coeff
 
     
     def __get_partition_ids(self):
-        histogram_relation = \
-            Relation_Prefixes.HISTOGRAM_RELATION_PREFIX +\
+        representative_relation = \
+            Relation_Prefixes.REPRESENTATIVE_RELATION_PREFIX +\
                 self.__relation
         sql = 'SELECT DISTINCT partition_id FROM ' +\
-            histogram_relation + ' WHERE attribute=' +\
+            representative_relation + ' WHERE attribute=' +\
             "'" + self.__attribute + "'"
         if len(self.__base_predicate) > 0:
             sql += ' AND ' + self.__base_predicate
@@ -39,134 +46,144 @@ class RepresentativeScenarioGenerator(ScenarioGenerator):
         for tuple in raw_pids:
             pids.append(tuple[0])
         return pids
-    
 
-    def __get_histogram(self, pid: int):
-        histogram_relation = \
-            Relation_Prefixes.HISTOGRAM_RELATION_PREFIX +\
-                self.__relation
-        sql = 'SELECT bar_start, bar_width, start_cdf,' +\
-            ' prob_width FROM ' + histogram_relation +\
-            ' WHERE partition_id = ' + str(pid) +\
-            ' AND attribute = ' + "'" + self.__attribute +\
-            "'"
+    def __generate_values(self, pid, n_values):
 
-        if len(self.__base_predicate) > 0:
-            sql += ' AND ' + self.__base_predicate
-        sql += ' ORDER BY bar_start;'
-        PgConnection.Execute(sql)
-        return PgConnection.Fetch()     
-    
+        cache_key = (self.__relation, self.__attribute, pid)
+        if cache_key in RepresentativeScenarioGenerator.__cached_histograms:
+            cdf, edges = RepresentativeScenarioGenerator.__cached_histograms[cache_key]
 
-    def __get_values(self, pid: int, location: dict,
-                     norta_vec: list[list[float]],
-                     bars):
-        cdfs = sorted(location.keys())
-        if bars is None:
-            bars = self.__get_histogram(pid)
-        cdf_index = 0
-        
-        for bar_start, bar_width, start_cdf, prob_width\
-            in bars:
-            while start_cdf + prob_width >= cdfs[cdf_index]:
-                value = bar_start + (
-                    (cdfs[cdf_index] -start_cdf)*bar_width)/\
-                        prob_width
-                for row, column in location[cdfs[cdf_index]]:
+        else:
+            num_scenarios = Hyperparameters.NO_OF_HIST_BINS*10
 
-                    norta_vec[row][column] = value
-                    cdf_index += 1
-                    if cdf_index >= len(cdfs):
-                        break
-                if cdf_index >= len(cdfs):
-                    break
-            if cdf_index >= len(cdfs):
-                break
-        return norta_vec
+            scenarios = RepresentativeScenarioGeneratorWithoutCorrelation(
+                relation=self.__relation,
+                attr=self.__attribute,
+                scenario_generator=self.__dbInfo.get_variable_generator_function(
+                    self.__attribute),
+                duplicates=[1],
+                base_predicate='partition_id=' + str(pid)
+            ).generate_scenarios(
+                seed=Hyperparameters.INIT_SEED,
+                no_of_scenarios=int(num_scenarios),
+            )
+
+            scenarios = np.array(scenarios)
+
+            bins = Hyperparameters.NO_OF_HIST_BINS
+
+            edges = np.quantile(scenarios, np.linspace(0,1, bins+1))
+            counts, _ = np.histogram(scenarios, bins=edges)
+
+            probs = counts.astype(float)
+            probs /= probs.sum()
+
+            cdf = np.cumsum(probs)
+            RepresentativeScenarioGenerator.__cached_histograms[cache_key] = cdf, edges
+
+        rng = np.random.default_rng(seed=SeedManager.get_next_seed())
+
+        # uniform values for inverse CDF sampling
+        u = rng.random(n_values)
+
+        # find bins
+        bin_idx = np.searchsorted(cdf, u, side="right")
+        bin_idx = np.clip(bin_idx, 0, len(cdf) - 1)
+
+        cdf_left = np.where(bin_idx == 0, 0.0, cdf[bin_idx - 1])
+        cdf_right = cdf[bin_idx]
+
+        left = edges[bin_idx]
+        right = edges[bin_idx + 1]
             
+        # interpolate within bin
+        values = left + (u - cdf_left) * (right - left) / (cdf_right - cdf_left)
+
+        return values
 
     def generate_scenarios(
         self, seed: int, no_of_scenarios: int, pid=None,
-        bins=None, duplicates_to_use=-1, correlation_to_use = -2
+        duplicates_to_use=-1, correlation_to_use=-2
     ) -> list[list[float]]:
+
         scenarios = []
         rng = Generator(SFC64(SeedSequence(seed)))
+
         if pid is None:
             pids = self.__get_partition_ids()
         else:
             pids = [pid]
-        
 
-        location = dict()
+        for idx, pid in enumerate(pids):
 
-        for _ in range(len(pids)):
-            pid = pids[_]
-            
             if duplicates_to_use == -1:
-                duplicates = self.__duplicate_vector[_]
+                duplicates = self.__duplicate_vector[idx]
             else:
                 duplicates = duplicates_to_use
+
             if correlation_to_use == -2:
-                correlation = self.__correlation_coeff[_]
+                correlation = self.__correlation_coeff[idx]
             else:
                 correlation = correlation_to_use
 
-            start_time = time.time()
+            duplicates += 1
+
+            # Step 1: Generate independent normals
             norta_vec = rng.standard_normal(
-                size=(duplicates, no_of_scenarios))
-            
-            lambda_1 = np.sqrt(1 + (duplicates - 1)*\
-                               correlation)
-            lambda_2 = np.sqrt(1 - correlation)
-            
-            # Vectorized sum across the `duplicate` axis (excluding the first element)
-            sum_others = np.sum(norta_vec[1:duplicates, :], axis=0)
+                size=(int(duplicates), no_of_scenarios)
+            )
 
-            # Update the first row of `norta_vec` vectorized
-            norta_vec[0, :] = norta_vec[0, :] * lambda_1 - sum_others * lambda_2
+            # Step 2: Apply NORTA correlation structure
+            lambda_1 = np.sqrt(max(0.0, 1 + (duplicates - 1) * correlation))
+            lambda_2 = np.sqrt(max(0.0, 1 - correlation))
 
-            # Apply the norm.cdf and update the location dictionary for the first row
-            keys = norm.cdf(norta_vec[0, :])
-            for scenario, key in enumerate(keys):
-                if key not in location:
-                    location[key] = []
-                location[key].append((0, scenario))
+            sum_others = np.sum(norta_vec[1:], axis=0)
 
-            # Vectorized update for the rest of the duplicates
-            norta_vec[1:duplicates, :] *= lambda_2
-            norta_vec[1:duplicates, :] -= norta_vec[0, :] * lambda_1
+            original_norta_0 = norta_vec[0].copy()
+            norta_vec[0] = norta_vec[0] * lambda_1 - sum_others * lambda_2
 
-            # Apply the norm.cdf and update the location dictionary for the duplicates
-            keys_duplicates = norm.cdf(norta_vec[1:duplicates, :])
+            norta_vec[1:] *= lambda_2
+            norta_vec[1:] -= original_norta_0 * lambda_1
 
-            for duplicate in range(1, duplicates):
-                for scenario, key in enumerate(keys_duplicates[duplicate-1, :]):
-                    if key not in location:
-                        location[key] = []
-                    location[key].append((duplicate, scenario))
-            # print(time.time() - start_time, 'seconds to finish norta vec')
-            start_time = time.time()
-            norta_vec = self.__get_values(pid, location,
-                                          norta_vec, bins)
-            
-            # print(time.time() - start_time, 'seconds to finish cdf matching')
-            for vec in norta_vec:
-                scenarios.append(vec)
-            
+            # Normalize rows to unit variance so norm.cdf gives correct uniform marginals.
+            # Var(row 0)  = lambda_1^2 + (d-1)*lambda_2^2 = d
+            # Var(row i)  = lambda_2^2 + lambda_1^2       = 2 + (d-2)*rho
+            norta_vec[0] /= np.sqrt(duplicates)
+            if duplicates > 1:
+                norta_vec[1:] /= np.sqrt(2 + (duplicates - 2) * correlation)
+
+            # Step 3: Convert to uniform
+            u = norm.cdf(norta_vec[1:])
+
+            # Step 4: Flatten and sort ranks
+            u_flat = u.ravel()
+            order = np.argsort(u_flat)
+
+            # Step 5: Generate marginal samples
+            values = self.__generate_values(pid, len(u_flat))
+
+            values.sort()
+
+            # Step 6: Assign according to rank order
+            result_flat = np.empty_like(u_flat)
+            result_flat[order] = values
+
+            result = result_flat.reshape(u.shape)
+
+            scenarios.extend(result)
+
         return scenarios
-    
 
     def generate_scenarios_multiple_pids(
         self, seed: int, no_of_scenarios: int,
-        pids: list[int], bins_list,
+        pids: list[int],
         duplicates: list[int],
         correlations_list: list[float]):
         scenarios = []
         for _ in range(len(pids)):
             pid = pids[_]
-            bins = bins_list[_]
             new_scenarios = self.generate_scenarios(
-                seed, no_of_scenarios, pid, bins,
+                seed, no_of_scenarios, pid,
                 duplicates[_],
                 correlations_list[_]
             )

@@ -38,7 +38,9 @@ class SketchRCLSolve:
         approximation_bound: float,
         sampling_tolerance: float,
         bisection_threshold: float,
-        partition_sizes: list[int]
+        partition_sizes: list[int],
+        duplicate_vector: list[int],
+        partition_id_for_each_index: list[int]
     ):
         self.__query = query
         self.__gurobi_env = gp.Env(
@@ -50,7 +52,6 @@ class SketchRCLSolve:
             env=self.__gurobi_env)
         self.__is_linear_relaxation = \
             linear_relaxation
-        
         
         self.__partition_sizes = \
             partition_sizes
@@ -64,16 +65,16 @@ class SketchRCLSolve:
         self.__bisection_threshold = \
             bisection_threshold
         
-        self.__no_of_vars = \
-            no_of_variables
+        self.__no_of_vars = no_of_variables
         
         self.__vars = []
         
         self.__risk_constraints = []
         self.__risk_to_lcvar_constraint_mapping = dict()
+        self.__sorted_scenario_prefix_sums = {}
+        self.__opt_scenario_scores_cache = {}
 
-        self.__ids = [_ for _ in range(
-            no_of_variables)]
+        self.__ids = [_ for _ in range(no_of_variables)]
         
         self.__metrics = OptimizationMetrics(
             'SketchRCLSolve',
@@ -83,7 +84,37 @@ class SketchRCLSolve:
         self.__scenarios = scenarios
         self.__no_of_scenarios = no_of_opt_scenarios
         self.__values = values
+        self.__duplicate_vector = duplicate_vector
+        self.__partition_ids_for_each_index = partition_id_for_each_index
+        self.__bounded_partition = None
+        self.__partition_multiplicity_upper_bound = None
+        print('Sketch Solver Initialized')
+
+    def set_partition_upper_bound(self, partition_id, upper_bound):
+        self.__bounded_partition = partition_id
+        self.__partition_multiplicity_upper_bound = upper_bound
+
+    def update_scenarios_and_values(
+        self, updated_scenarios, updated_values,
+        updated_duplicate_vector, updated_no_of_vars,
+        partition_id_in_duplicate_vector 
+    ):
+        print('Changing alpha')
+        self.__scenarios = updated_scenarios
+        self.__values = updated_values
+        self.__duplicate_vector = updated_duplicate_vector
+        self.__no_of_vars = updated_no_of_vars
+        self.__ids = [_ for _ in range(updated_no_of_vars)]
+        self.__validator.update_partition_id_in_duplicate_vector(
+            partition_id_in_duplicate_vector
+        )
     
+    def update_scenarios(
+        self, updated_scenarios, no_of_scenarios
+    ):
+        self.__scenarios = updated_scenarios
+        self.__no_of_scenarios = no_of_scenarios
+        self.__opt_scenario_scores_cache = {}
 
     def __get_upper_bound_for_repetitions(self) -> int:
         for constraint in self.__query.get_constraints():
@@ -99,24 +130,35 @@ class SketchRCLSolve:
         if self.__is_linear_relaxation:
             type = GRB.CONTINUOUS
         self.__vars = []
-        if max_repetition is not None:
-            for _ in range(self.__no_of_vars):
-                self.__vars.append(
-                    self.__model.addVar(
-                        lb=0,
-                        ub=max_repetition*\
-                            self.__partition_sizes[_],
-                        vtype=type
+        partition_no = 0
+        for duplicates in self.__duplicate_vector:
+            if max_repetition is not None:
+                total_ub = max_repetition * \
+                    self.__partition_sizes[partition_no]
+            else:
+                total_ub = None
+            if self.__bounded_partition is not None and \
+                    partition_no == self.__bounded_partition:
+                bounded_ub = self.__partition_multiplicity_upper_bound
+                total_ub = bounded_ub if total_ub is None \
+                    else min(total_ub, bounded_ub)
+            partition_no += 1
+            for dup_idx in range(duplicates):
+                if total_ub is not None:
+                    ub = total_ub // duplicates
+                    if dup_idx < total_ub % duplicates:
+                        ub += 1
+                    self.__vars.append(
+                        self.__model.addVar(
+                            lb=0, ub=ub, vtype=type
+                        )
                     )
-                )
-        else:
-            for _ in range(self.__no_of_vars):
-                self.__vars.append(
-                    self.__model.addVar(
-                        lb=0,
-                        vtype=type
+                else:
+                    self.__vars.append(
+                        self.__model.addVar(
+                            lb=0, vtype=type
+                        )
                     )
-                )
     
 
     def __get_gurobi_inequality(
@@ -152,10 +194,6 @@ class SketchRCLSolve:
                 deterministic_constraint.get_inequality_sign())
         sum_limit = deterministic_constraint.get_sum_limit()
         
-        print('Sum limit for', attribute, ':', sum_limit)
-        print('Value of 5032:', self.__values[attribute][5032])
-        print('Value of 5033:', self.__values[attribute][5033])
-        print('Value of 5034:', self.__values[attribute][5034])
         self.__model.addConstr(
             gp.LinExpr(self.__values[attribute], self.__vars),
             gurobi_inequality, sum_limit
@@ -195,24 +233,60 @@ class SketchRCLSolve:
                 *no_of_scenarios)/100))
 
 
+    def __preprocess_lcvar_prefix_sums(self) -> None:
+        self.__sorted_scenario_prefix_sums = {}
+        for constraint in self.__query.get_constraints():
+            if not constraint.is_risk_constraint():
+                continue
+            attr = constraint.get_attribute_name()
+            if constraint.is_cvar_constraint():
+                tail_type = constraint.get_tail_type()
+            else:
+                if constraint.get_inequality_sign() == \
+                        RelationalOperators.GREATER_THAN_OR_EQUAL_TO:
+                    tail_type = TailType.LOWEST
+                else:
+                    tail_type = TailType.HIGHEST
+            key = (attr, tail_type)
+            if key in self.__sorted_scenario_prefix_sums:
+                continue
+            prefix_avgs = []
+            for var_idx in range(self.__no_of_vars):
+                arr = np.array(
+                    self.__scenarios[attr][var_idx], dtype=np.float64)
+                if tail_type == TailType.LOWEST:
+                    sorted_arr = np.sort(arr)
+                else:
+                    sorted_arr = np.sort(arr)[::-1]
+                k = np.arange(1, len(sorted_arr) + 1, dtype=np.float64)
+                prefix_avgs.append(np.cumsum(sorted_arr) / k)
+            self.__sorted_scenario_prefix_sums[key] = prefix_avgs
+
+
     def __get_cvar_constraint_coefficients(
         self, cvar_constraint: CVaRConstraint,
         no_of_scenarios_to_consider: int,
         total_no_of_scenarios: int
     ):
         attr = cvar_constraint.get_attribute_name()
+        key = (attr, cvar_constraint.get_tail_type())
+
+        if key in self.__sorted_scenario_prefix_sums:
+            k = no_of_scenarios_to_consider
+            prefix_avgs = self.__sorted_scenario_prefix_sums[key]
+            return [prefix_avgs[var][k - 1]
+                    for var in range(self.__no_of_vars)]
 
         tuple_wise_heaps = []
         is_max_heap = True
         if cvar_constraint.get_tail_type() == TailType.HIGHEST:
             is_max_heap = False
-        
+
         for _ in range(self.__no_of_vars):
             tuple_wise_heaps.append(
                 Heap(is_max_heap))
-        
-        for scenario_index in range(total_no_of_scenarios):
 
+        for scenario_index in range(total_no_of_scenarios):
             for var in range(self.__no_of_vars):
                 scenario_value = self.__scenarios[attr][var][
                     scenario_index]
@@ -220,7 +294,7 @@ class SketchRCLSolve:
                 if tuple_wise_heaps[var].size() > \
                     no_of_scenarios_to_consider:
                     tuple_wise_heaps[var].pop()
-        
+
         return [tuple_wise_heaps[var].sum()/no_of_scenarios_to_consider\
                 for var in range(self.__no_of_vars)]
 
@@ -258,8 +332,7 @@ class SketchRCLSolve:
         self, constraint: VaRConstraint,
         cvar_threshold: float
     ):
-        cvarified_constraint = \
-            CVaRConstraint()
+        cvarified_constraint = CVaRConstraint()
         cvarified_constraint.set_percentage_of_scenarios(
             (1 - constraint.get_probability_threshold())*100)
         if constraint.get_inequality_sign() == \
@@ -295,26 +368,29 @@ class SketchRCLSolve:
         risk_constraint_index = 0
         for constraint in self.__query.get_constraints():
             if constraint.is_package_size_constraint():
+                print('Adding package size constraint to model')
                 self.__add_package_size_constraint_to_model(
                     constraint
                 )
             if constraint.is_deterministic_constraint():
+                print('Adding deterministic constraint to model')
                 self.__add_deterministic_constraint_to_model(
                     constraint
                 )
             if constraint.is_expected_sum_constraint():
-                if probabilistically_constrained:
-                    self.__add_expected_sum_constraint_to_model(
-                        constraint, no_of_scenarios
-                    )
+                print('Adding expected sum constraint to model')
+                self.__add_expected_sum_constraint_to_model(
+                    constraint
+                )
             if constraint.is_risk_constraint():
                 if probabilistically_constrained:
-                    if risk_constraint_index not in \
-                        trivial_constraints:
+                    print('Considering risk constraint', risk_constraint_index)
+                    if risk_constraint_index not in trivial_constraints:
+                        print('Risk constraint is not trivial')
                         if constraint.is_cvar_constraint():
-                            cvarified_constraint = \
-                                constraint
+                            cvarified_constraint = constraint
                         else:
+                            print('CVaRifying VaR constraint')
                             cvarified_constraint = \
                                 self.__get_cvarified_constraint(
                                     constraint=constraint,
@@ -322,6 +398,7 @@ class SketchRCLSolve:
                                         risk_constraint_index]
                                 )
                         
+                        print('Adding LCVaR constraint')
                         self.__add_lcvar_constraint_to_model(
                             risk_constraint=constraint,
                             cvarified_constraint=cvarified_constraint,
@@ -331,7 +408,28 @@ class SketchRCLSolve:
                                     risk_constraint_index
                                 ]
                         )
-                        risk_constraint_index += 1
+                else:
+                    print('Probabilistically unconstrained problem')
+                    print('Adding weaker constraint')
+                    attribute = constraint.get_attribute_name()
+                    sum_limit = constraint.get_sum_limit()
+                    coefficients = []
+                    for tuple_scenarios in self.__scenarios[attribute]:
+                        coefficients.append(np.median(tuple_scenarios))
+                        '''
+                        if constraint.get_inequality_sign() == RelationalOperators.GREATER_THAN_OR_EQUAL_TO:
+                            coefficients.append(np.max(tuple_scenarios))
+                        else:
+                            coefficients.append(np.min(tuple_scenarios))
+                        '''
+                    gurobi_inequality = GRB.LESS_EQUAL
+                    if constraint.get_inequality_sign() == RelationalOperators.GREATER_THAN_OR_EQUAL_TO:
+                        gurobi_inequality = GRB.GREATER_EQUAL
+                    self.__model.addConstr(
+                        gp.LinExpr(coefficients, self.__vars), gurobi_inequality, sum_limit)
+                
+                risk_constraint_index += 1
+                
 
     
     def __add_objective_to_model(
@@ -373,16 +471,19 @@ class SketchRCLSolve:
         
         self.__model = gp.Model(
             env=self.__gurobi_env)
+        print('Adding Variables to model')
         self.__add_variables_to_model()
+        print('Adding Constraints to model')
         self.__add_constraints_to_model(
             no_of_scenarios,
             no_of_scenarios_to_consider,
             probabilistically_constrained,
             cvar_lower_bounds, trivial_constraints)
+        print('Adding objective to model')
         self.__add_objective_to_model(
             self.__query.get_objective(),
             no_of_scenarios)
-        
+        print('Model setup')        
 
     def __get_package(self):
         self.__metrics.start_optimizer()
@@ -399,12 +500,24 @@ class SketchRCLSolve:
                 idx += 1
         except AttributeError:
             return None
+        if not package_dict:
+            return None
         return package_dict
-    
+
 
     def __get_package_with_indices(self):
         return self.__get_package()
     
+    def __get_package_tuple_partitions(self):
+        package_dict = self.__get_package()
+        partition_package_dict = dict()
+        for id in package_dict:
+            pid = self.__partition_ids_for_each_index[id]
+            if pid not in partition_package_dict:
+                partition_package_dict[pid] = package_dict[id]
+            else:
+                partition_package_dict[pid] += package_dict[id]
+        return partition_package_dict
 
     def __get_objective_value_among_optimization_scenarios(
         self, package_with_indices
@@ -423,7 +536,7 @@ class SketchRCLSolve:
 
     def __is_objective_value_relative_diff_high(
         self, package, package_with_indices,
-    ) -> bool:
+    ):
         if package is None:
             return False, 0
         objective_value_optimization_scenarios =\
@@ -439,8 +552,7 @@ class SketchRCLSolve:
         diff = objective_value_optimization_scenarios - \
                     objective_value_validation_scenarios
         
-        if self.__query.get_objective().get_objective_type() ==\
-            ObjectiveType.MINIMIZATION:
+        if diff < 0:
             diff *= -1
 
         rel_diff = diff / (objective_value_validation_scenarios
@@ -475,46 +587,14 @@ class SketchRCLSolve:
         constraint: VaRConstraint | CVaRConstraint
     ) -> list[float]:
         attr = constraint.get_attribute_name()
-        scenario_scores = []
-        if no_of_scenarios < \
-            self.__feasible_no_of_scenarios_to_store:
-            for scenario_no in range(no_of_scenarios):
-                scenario_score = 0
-                
-                for idx in package_with_indices:
-                    value = \
-                        self.__scenarios[attr][idx][
-                            scenario_no]
-                    scenario_score += value *\
-                        package_with_indices[idx]
-                
-                scenario_scores.append(scenario_score)
-            scenario_scores.sort()
-            return scenario_scores
-        
-        total_scenarios = 0
-        while total_scenarios < \
-            self.__feasible_no_of_scenarios_to_store:
-            
-            self.__add_feasible_no_of_scenarios(attr)
-            total_scenarios += \
-                self.__feasible_no_of_scenarios_to_store
-            
-            for scenario_no in range(
-                self.__feasible_no_of_scenarios_to_store):
-                scenario_score = 0
-
-                for idx in package_with_indices:
-                    value = \
-                        self.__scenarios[attr][idx][
-                            scenario_no
-                        ]
-                    scenario_score += value * \
-                        package_with_indices[idx]
-                
-                scenario_scores.append(scenario_score)
-        
-        scenario_scores.sort()
+        cache_key = (attr, tuple(sorted(package_with_indices.items())), no_of_scenarios)
+        if cache_key in self.__opt_scenario_scores_cache:
+            return self.__opt_scenario_scores_cache[cache_key]
+        idxs = list(package_with_indices.keys())
+        mults = np.array([package_with_indices[i] for i in idxs])
+        mat = np.array([self.__scenarios[attr][i][:no_of_scenarios] for i in idxs])
+        scenario_scores = np.sort(mat.T @ mults).tolist()
+        self.__opt_scenario_scores_cache[cache_key] = scenario_scores
         return scenario_scores
 
 
@@ -570,6 +650,10 @@ class SketchRCLSolve:
         is_model_setup: bool,
         can_add_scenarios: bool
     ) -> CVaRificationSearchResults:
+        cvar_upper_bounds = list(cvar_upper_bounds)
+        cvar_lower_bounds = list(cvar_lower_bounds)
+        best_feasible_package = None
+        best_feasible_objective = None
         while self.__l_inf(
             cvar_upper_bounds, cvar_lower_bounds) >= \
             self.__bisection_threshold:
@@ -637,7 +721,7 @@ class SketchRCLSolve:
                     if risk_constraint_index not in trivial_constraints:
                         if constraint.is_cvar_constraint():
                             cvar_validation = \
-                                self.__validator.get_cvar_constraint_satisfaction(
+                                self.__validator.get_cvar_among_validation_scenarios(
                                     package, constraint
                                 )
                             
@@ -663,7 +747,20 @@ class SketchRCLSolve:
                                 constraint, var_validation
                             ):
                                 print('VaR constraint satisfied')
-                                all_constraints_violated = False
+                                cvarified_constraint = \
+                                    self.__get_cvarified_constraint(
+                                        constraint,
+                                        constraint.get_sum_limit()
+                                    )
+                                cvarified_cvar_validation = \
+                                    self.__validator.get_cvar_among_validation_scenarios(
+                                        package, cvarified_constraint
+                                    )
+                                if self.__is_cvar_constraint_satisfied(
+                                    cvarified_constraint,
+                                    cvarified_cvar_validation
+                                ):
+                                    all_constraints_violated = False
                                 cvar_lower_bounds[risk_constraint_index] = \
                                     cvar_mid_thresholds[risk_constraint_index]
                             else:
@@ -673,17 +770,44 @@ class SketchRCLSolve:
                                     cvar_mid_thresholds[risk_constraint_index]
                     risk_constraint_index += 1
 
-                if all_constraints_satisfied:
-                    if self.__is_objective_value_enough(
-                        validation_objective_value, objective_upper_bound
-                    ):
-                        result = CVaRificationSearchResults()
-                        result.set_found_appropriate_package(True)
-                        result.set_package(package)
-                        result.set_objective_value(
-                            validation_objective_value)
-                        return result
-            
+            if all_constraints_satisfied:
+                if self.__is_objective_value_enough(
+                    validation_objective_value, objective_upper_bound
+                ):
+                    result = CVaRificationSearchResults()
+                    result.set_found_appropriate_package(True)
+                    result.set_package(package)
+                    result.set_objective_value(validation_objective_value)
+                    return result
+                else:
+                    if best_feasible_package is None or \
+                        (self.__query.get_objective().get_objective_type() == \
+                            ObjectiveType.MAXIMIZATION and \
+                            validation_objective_value > best_feasible_objective) or \
+                        (self.__query.get_objective().get_objective_type() != \
+                            ObjectiveType.MAXIMIZATION and \
+                            validation_objective_value < best_feasible_objective):
+                        best_feasible_package = package
+                        best_feasible_objective = validation_objective_value
+
+            if all_constraints_violated:
+                if self.__query.get_objective().get_objective_type() ==\
+                    ObjectiveType.MAXIMIZATION:
+                    if validation_objective_value < objective_upper_bound:
+                        objective_upper_bound = validation_objective_value
+                else:
+                    if validation_objective_value > objective_upper_bound:
+                        objective_upper_bound = validation_objective_value
+
+        if best_feasible_package is not None and \
+            self.__is_objective_value_enough(
+                best_feasible_objective, objective_upper_bound):
+            result = CVaRificationSearchResults()
+            result.set_found_appropriate_package(True)
+            result.set_package(best_feasible_package)
+            result.set_objective_value(best_feasible_objective)
+            return result
+
         result = CVaRificationSearchResults()
         result.set_objective_upper_bound(
             objective_upper_bound)
@@ -702,6 +826,9 @@ class SketchRCLSolve:
         is_model_setup: bool,
         can_add_scenarios: bool
     ) -> CVaRificationSearchResults:
+        max_no_of_scenarios_to_consider = list(max_no_of_scenarios_to_consider)
+        best_feasible_package = None
+        best_feasible_objective = None
         while self.__l_inf(
             min_no_of_scenarios_to_consider,
             max_no_of_scenarios_to_consider
@@ -714,7 +841,11 @@ class SketchRCLSolve:
                      max_no_of_scenarios_to_consider[ind]) // 2
                 )
             
+            print('Solving by considering', mid_no_of_scenarios_to_consider,
+                  'for each constraint')
+            
             if not is_model_setup:
+                print('Setting up probabilistically constrained model')
                 self.__model_setup(
                     no_of_scenarios=no_of_scenarios,
                     no_of_scenarios_to_consider=\
@@ -725,15 +856,26 @@ class SketchRCLSolve:
                 )
                 is_model_setup = True
             else:
+                print('Using existing model')
                 risk_constraint_index = 0
                 for constraint in self.__query.get_constraints():
                     if constraint.is_risk_constraint():
                         if risk_constraint_index not in trivial_constraints:
-                            coefficients = \
-                                self.__get_cvar_constraint_coefficients(
+                            print('Risk constraint', risk_constraint_index,
+                                  'is not trivial')
+                            print('Getting constraints with',
+                                  mid_no_of_scenarios_to_consider[risk_constraint_index],
+                                  'scenarios from each tuple')
+                            if constraint.is_cvar_constraint():
+                                cvarified_constraint = constraint
+                            else:
+                                cvarified_constraint = \
                                     self.__get_cvarified_constraint(
                                         constraint, cvar_thresholds[
-                                            risk_constraint_index]),
+                                            risk_constraint_index])
+                            coefficients = \
+                                self.__get_cvar_constraint_coefficients(
+                                    cvarified_constraint,
                                     mid_no_of_scenarios_to_consider[
                                         risk_constraint_index],
                                     no_of_scenarios)
@@ -743,10 +885,13 @@ class SketchRCLSolve:
                                     self.__risk_to_lcvar_constraint_mapping[
                                         constraint],
                                     self.__vars[_], coefficients[_]
-                                )                    
+                                )
+                            print('Changing constraint coefficients')                    
                         risk_constraint_index += 1
             
+            print('Getting package with new coefficients')
             package = self.__get_package()
+            print('Obtained package:', package)
             if package is None:
                 min_no_of_scenarios_to_consider = \
                     mid_no_of_scenarios_to_consider
@@ -763,70 +908,144 @@ class SketchRCLSolve:
             if unacceptable_diff and can_add_scenarios:
                 result = CVaRificationSearchResults()
                 result.set_needs_more_scenarios(True)
+                print('Diff between opt and val scenario'
+                      'values is high.')
+                print('Asking to add more scenarios.')
                 return result
             
             all_constraints_satisfied = True
+            all_constraints_violated = True
             risk_constraint_index = 0
 
             for constraint in self.__query.get_constraints():
                 if constraint.is_risk_constraint():
                     if risk_constraint_index not in trivial_constraints:
                         if constraint.is_cvar_constraint():
+                            print('Checking CVaR constraint satisfaction')
                             cvar_validation = \
-                                self.__validator.get_cvar_constraint_satisfaction(
+                                self.__validator.get_cvar_among_validation_scenarios(
                                     package, constraint
                                 )
-                            
+
                             if self.__is_cvar_constraint_satisfied(
                                 constraint, cvar_validation
                             ):
-                                min_no_of_scenarios_to_consider = \
-                                    mid_no_of_scenarios_to_consider
+                                print('CVaR constraint is satisfied')
+                                all_constraints_violated = False
+                                min_no_of_scenarios_to_consider[risk_constraint_index] = \
+                                    mid_no_of_scenarios_to_consider[risk_constraint_index]
+                                print('Relaxing risk constraint', risk_constraint_index,
+                                      'by updating the min. scenario bound to',
+                                      min_no_of_scenarios_to_consider[risk_constraint_index])
                             else:
+                                print('CVaR constraint is not satisfied')
                                 all_constraints_satisfied = False
-                                max_no_of_scenarios_to_consider = \
-                                    mid_no_of_scenarios_to_consider
-                                
+                                max_no_of_scenarios_to_consider[risk_constraint_index] = \
+                                    mid_no_of_scenarios_to_consider[risk_constraint_index] - 1
+                                print('Tightening risk constraint', risk_constraint_index,
+                                      'by updating the max. scenario bound to',
+                                      max_no_of_scenarios_to_consider[risk_constraint_index])
+                                '''
                                 for ind in range(len(
                                     max_no_of_scenarios_to_consider)):
                                     max_no_of_scenarios_to_consider[ind]\
                                         -= 1
+                                '''
 
                         if constraint.is_var_constraint():
+                            print('Checking VaR constraint satisfaction')
                             var_validation = \
-                                self.__validator.get_var_constraint_satisfaction(
+                                self.__validator.get_var_among_validation_scenarios(
                                     package, constraint
                                 )
-                            
+
                             if self.__is_var_constraint_satisfied(
                                 constraint, var_validation
                             ):
-                                min_no_of_scenarios_to_consider = \
-                                    mid_no_of_scenarios_to_consider
+                                print('VaR constraint satisfied')
+                                cvarified_constraint = \
+                                    self.__get_cvarified_constraint(
+                                        constraint,
+                                        constraint.get_sum_limit()
+                                    )
+                                cvarified_cvar_validation = \
+                                    self.__validator.get_cvar_among_validation_scenarios(
+                                        package, cvarified_constraint
+                                    )
+                                if self.__is_cvar_constraint_satisfied(
+                                    cvarified_constraint,
+                                    cvarified_cvar_validation
+                                ):
+                                    all_constraints_violated = False
+                                min_no_of_scenarios_to_consider[risk_constraint_index] = \
+                                    mid_no_of_scenarios_to_consider[risk_constraint_index]
+                                print('Updating min no. of scenarios to consider for risk'
+                                      'constraint', risk_constraint_index, 'to',
+                                      min_no_of_scenarios_to_consider[risk_constraint_index])
                             else:
+                                print('VaR constraint not satisfied')
                                 all_constraints_satisfied = False
-                                max_no_of_scenarios_to_consider = \
-                                    mid_no_of_scenarios_to_consider
-                                
+                                max_no_of_scenarios_to_consider[risk_constraint_index] = \
+                                    mid_no_of_scenarios_to_consider[risk_constraint_index] - 1
+                                print('Updating max no. of scenarios to consider for risk',
+                                      'constraint', risk_constraint_index, 'to',
+                                      max_no_of_scenarios_to_consider[risk_constraint_index])
+                                '''
                                 for ind in range(len(
                                     max_no_of_scenarios_to_consider)):
                                     max_no_of_scenarios_to_consider[ind]\
                                         -= 1
+                                '''
                     risk_constraint_index += 1
 
-                if all_constraints_satisfied:
-                    if self.__is_objective_value_enough(
-                        validation_objective_value, objective_upper_bound
-                    ):
-                        result = CVaRificationSearchResults()
-                        result.set_found_appropriate_package(True)
-                        result.set_package(package)
-                        result.set_objective_value(
-                            validation_objective_value)
-                        return result
+            if all_constraints_satisfied:
+                print('All constraints are satisfied')
+                if self.__is_objective_value_enough(
+                    validation_objective_value, objective_upper_bound
+                ):
+                    print('Objective value is enough')
+                    result = CVaRificationSearchResults()
+                    result.set_found_appropriate_package(True)
+                    result.set_package(package)
+                    result.set_objective_value(
+                        validation_objective_value)
+                    return result
+                else:
+                    print('Objective value is insufficient')
+                    if best_feasible_package is None or \
+                        (self.__query.get_objective().get_objective_type() == \
+                            ObjectiveType.MAXIMIZATION and \
+                            validation_objective_value > best_feasible_objective) or \
+                        (self.__query.get_objective().get_objective_type() != \
+                            ObjectiveType.MAXIMIZATION and \
+                            validation_objective_value < best_feasible_objective):
+                        best_feasible_package = package
+                        best_feasible_objective = validation_objective_value
 
+            if all_constraints_violated:
+                if self.__query.get_objective().get_objective_type() ==\
+                    ObjectiveType.MAXIMIZATION:
+                    if validation_objective_value < objective_upper_bound:
+                        objective_upper_bound = validation_objective_value
+                else:
+                    if validation_objective_value > objective_upper_bound:
+                        objective_upper_bound = validation_objective_value
+
+        if best_feasible_package is not None and \
+            self.__is_objective_value_enough(
+                best_feasible_objective, objective_upper_bound):
+            print('Best feasible package from coefficient search passes updated bound.')
+            result = CVaRificationSearchResults()
+            result.set_found_appropriate_package(True)
+            result.set_package(best_feasible_package)
+            result.set_objective_value(best_feasible_objective)
+            return result
+
+        print('Could not find a satisfactory package with the coefficient search.')
         result = CVaRificationSearchResults()
         result.set_objective_upper_bound(objective_upper_bound)
+        print('Updating the min no of scenarios to consider to',
+              min_no_of_scenarios_to_consider)
         result.set_scenarios_to_consider(min_no_of_scenarios_to_consider)
         return result
             
@@ -856,6 +1075,17 @@ class SketchRCLSolve:
             idx += 1
         return linearized_cvar
     
+    def __get_expected_sum_among_optimization_scenarios(
+        self, probabilistically_unconstrained_package,
+        attribute
+    ):
+        expected_sum = 0
+        for id in probabilistically_unconstrained_package:
+            expected_sum += np.mean(
+                self.__scenarios[attribute][id])*\
+                    probabilistically_unconstrained_package[id]
+        return expected_sum
+    
 
     def __get_bounds_for_risk_constraints(
         self, no_of_scenarios,
@@ -884,9 +1114,14 @@ class SketchRCLSolve:
                     trivial_constraints.append(risk_constraint_index)
                     cvar_lower_bounds.append(constraint.get_sum_limit())
                     cvar_upper_bounds.append(constraint.get_sum_limit())
-                    no_of_scenarios_to_consider =\
-                        np.floor(constraint.get_percentage_of_scenarios()\
-                                 *no_of_scenarios/100.0)
+                    if constraint.is_cvar_constraint():
+                        no_of_scenarios_to_consider =\
+                            int(np.floor(constraint.get_percentage_of_scenarios()\
+                                     *no_of_scenarios/100.0))
+                    else:
+                        no_of_scenarios_to_consider =\
+                            int(np.floor((1 - constraint.get_probability_threshold())\
+                                     *no_of_scenarios))
                     min_no_of_scenarios_to_consider.append(
                         no_of_scenarios_to_consider
                     )
@@ -902,11 +1137,14 @@ class SketchRCLSolve:
                                 constraint, no_of_scenarios
                             )
                         cvar_upper_bounds.append(cvar_threshold)
-                        cvar_lower_bounds.append(constraint.get_sum_limit())
+                        cvar_lower_bounds.append(
+                            self.__get_expected_sum_among_optimization_scenarios(
+                                probabilistically_unconstrained_package,
+                                constraint.get_attribute_name()))
                         no_of_scenarios_to_consider =\
-                            np.floor(
+                            int(np.floor(
                                 constraint.get_percentage_of_scenarios()\
-                                 *no_of_scenarios/100.0)
+                                 *no_of_scenarios/100.0))
                         min_no_of_scenarios_to_consider.append(
                             no_of_scenarios_to_consider
                         )
@@ -917,18 +1155,21 @@ class SketchRCLSolve:
                         cvarified_constraint = \
                             self.__get_cvarified_constraint(
                                 constraint, constraint.get_sum_limit())
-                        
+
                         cvar_threshold = \
                             self.__get_linearized_cvar_among_optimization_scenarios(
                                 probabilistically_unconstrained_package,
                                 cvarified_constraint, no_of_scenarios
                             )
                         cvar_upper_bounds.append(cvar_threshold)
-                        cvar_lower_bounds.append(constraint.get_sum_limit())
+                        cvar_lower_bounds.append(
+                            self.__get_expected_sum_among_optimization_scenarios(
+                                probabilistically_unconstrained_package,
+                                constraint.get_attribute_name()))
                         no_of_scenarios_to_consider =\
-                            np.floor(
+                            int(np.floor(
                                 cvarified_constraint.get_percentage_of_scenarios()\
-                                 *no_of_scenarios/100.0)
+                                 *no_of_scenarios/100.0))
                         min_no_of_scenarios_to_consider.append(
                             no_of_scenarios_to_consider
                         )
@@ -947,6 +1188,7 @@ class SketchRCLSolve:
         self.__metrics.start_execution()
         no_of_scenarios = self.__no_of_scenarios
 
+        print('Setting up model')
         self.__model_setup(
             no_of_scenarios=no_of_scenarios,
             no_of_scenarios_to_consider=[],
@@ -956,8 +1198,10 @@ class SketchRCLSolve:
         probabilistically_unconstrained_package = \
             self.__get_package()
         print('Probabilistically unconstrained package:',
-            probabilistically_unconstrained_package)
+            self.__get_package_tuple_partitions())
         if probabilistically_unconstrained_package is None:
+            print('Probabilistically unconstrained'
+                  'problem is infeasible')
             self.__metrics.end_execution(0, 0)
             return (None, 0.0, False)
         
@@ -970,9 +1214,11 @@ class SketchRCLSolve:
                 probabilistically_unconstrained_package_with_indices
             )
             
-        if not can_add_scenarios or not unacceptable_diff:
-            objective_upper_bound = validation_objective_value
-        
+        objective_upper_bound = validation_objective_value
+
+        if can_add_scenarios and unacceptable_diff:
+            return (None, 0.0, True)
+
         print('Objective value upper bound:',
               objective_upper_bound)
 
@@ -992,7 +1238,9 @@ class SketchRCLSolve:
             self.__get_bounds_for_risk_constraints(
                 no_of_scenarios,
                 probabilistically_unconstrained_package,
-        )
+            )
+
+        self.__preprocess_lcvar_prefix_sums()
 
         is_model_setup = False
             
@@ -1020,41 +1268,7 @@ class SketchRCLSolve:
                 max_no_of_scenarios_to_consider)
             print('Trivial constraints:', trivial_constraints)
 
-            coefficient_search_result = \
-                self.__cvar_coefficient_search(
-                    no_of_scenarios,
-                    cvar_upper_bounds,
-                    trivial_constraints,
-                    objective_upper_bound,
-                    min_no_of_scenarios_to_consider,
-                    max_no_of_scenarios_to_consider,
-                    is_model_setup,
-                    can_add_scenarios,
-                )
-                
-            is_model_setup = True
-
-            if coefficient_search_result.\
-                get_needs_more_scenarios():
-                return (None, 0.0, True)
-            if coefficient_search_result.\
-                get_found_appropriate_package():
-                self.__metrics.end_execution(
-                    coefficient_search_result.\
-                        get_objective_value(),
-                    no_of_scenarios
-                )
-                return (
-                    coefficient_search_result.get_package(),
-                    coefficient_search_result.get_objective_value(),
-                    False
-                )
-                
-            min_no_of_scenarios_to_consider = \
-                coefficient_search_result.get_scenarios_to_consider()
-            objective_upper_bound = \
-                coefficient_search_result.get_objective_upper_bound()
-                
+            print('Moving on to threshold search')
             threshold_search_result = \
                 self.__cvar_threshold_search(
                     no_of_scenarios,
@@ -1067,10 +1281,12 @@ class SketchRCLSolve:
                     can_add_scenarios
                 )
 
+            is_model_setup = True
+
             if can_add_scenarios and threshold_search_result.\
                 get_needs_more_scenarios():
                 return (None, 0.0, True)
-            
+
             if threshold_search_result.\
                 get_found_appropriate_package():
                 self.__metrics.end_execution(
@@ -1087,6 +1303,41 @@ class SketchRCLSolve:
                 threshold_search_result.get_cvar_thresholds()
             objective_upper_bound = \
                 threshold_search_result.get_objective_upper_bound()
+
+            coefficient_search_result = \
+                self.__cvar_coefficient_search(
+                    no_of_scenarios,
+                    cvar_upper_bounds,
+                    trivial_constraints,
+                    objective_upper_bound,
+                    min_no_of_scenarios_to_consider,
+                    max_no_of_scenarios_to_consider,
+                    is_model_setup,
+                    can_add_scenarios,
+                )
+
+            if coefficient_search_result.\
+                get_needs_more_scenarios():
+                print('Needs more scenarios')
+                return (None, 0.0, True)
+            if coefficient_search_result.\
+                get_found_appropriate_package():
+                print('Coefficient search found the appropriate package')
+                self.__metrics.end_execution(
+                    coefficient_search_result.\
+                        get_objective_value(),
+                    no_of_scenarios
+                )
+                return (
+                    coefficient_search_result.get_package(),
+                    coefficient_search_result.get_objective_value(),
+                    False
+                )
+
+            min_no_of_scenarios_to_consider = \
+                coefficient_search_result.get_scenarios_to_consider()
+            objective_upper_bound = \
+                coefficient_search_result.get_objective_upper_bound()
                 
             for ind in range(len(cvar_upper_bounds)):
                 if cvar_upper_bounds[ind] <\

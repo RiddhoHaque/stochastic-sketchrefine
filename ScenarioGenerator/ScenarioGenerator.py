@@ -27,7 +27,7 @@ class ScenarioGenerator:
         self, seed: int, no_of_scenarios: int,
         partition_id: int
     ) -> list[list[float]]:
-        self.__relation == self.__relation +\
+        self.__relation = self.__relation +\
             ' AS r INNER JOIN ' + \
                 Relation_Prefixes.PARTITION_RELATION_PREFIX +\
                     self.__relation + ' AS p ON r.id=p.tuple_id'

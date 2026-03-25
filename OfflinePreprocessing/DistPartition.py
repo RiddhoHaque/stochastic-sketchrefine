@@ -43,23 +43,26 @@ class DistPartition:
             values =\
                 self.__get_values(0, self.__total_tuples-1,
                                   det_attr)
-            self.__values[det_attr] = []
-            for value in values:
-                self.__values[det_attr].append(value[0])
-            print('Created values for', det_attr)
-        
+            self.__values[det_attr] = np.array([v[0] for v in values])
+
         self.__scenarios = dict()
         for stoch_attr in self.__dbInfo.get_stochastic_attributes():
             self.__diameter_thresholds[stoch_attr] = \
                 self.__dbInfo.get_diameter_threshold(
                     stoch_attr)
-            self.__scenarios[stoch_attr] = \
+            self.__scenarios[stoch_attr] = np.array(
                 self.__get_scenarios(0, self.__total_tuples-1,
-                                     stoch_attr)
-            print('Created Scenarios for', stoch_attr)
+                                     stoch_attr))
         self.__metrics.end_scenario_generation()
         self.__ids_in_partition = []
         self.__hist_bins = dict()
+
+        id_lists = ValueGenerator(
+            relation=self.__relation,
+            base_predicate='',
+            attribute='id'
+        ).get_values()
+        self.__all_ids = [int(t[0]) for t in id_lists]
 
 
     def __get_values(
@@ -128,6 +131,8 @@ class DistPartition:
             curr_samples = len(v1)
         
             diff = mean_abs_diff - self.__diameter_thresholds[attr]/2
+            if abs(diff) < 1e-12:
+                return mean_abs_diff
             diff = 1.04*std_abs_diff/diff
             if diff < 0:
                 diff *= -1
@@ -153,27 +158,21 @@ class DistPartition:
     def __get_distance_id_pairs(
         self, ids: list[int], pivot: int,
         attribute: str) -> list[(float, int)]:
-        distance_id_pairs = []
-        if self.__dbInfo.is_deterministic_attribute(
-            attribute):
-            for id in ids:
-                distance = self.__values[attribute][id] - \
-                    self.__values[attribute][pivot]
-                if distance < 0:
-                    distance *= -1
-                distance_id_pairs.append(
-                    (distance, id)
-                )
+        id_array = np.array(ids)
+        if self.__dbInfo.is_deterministic_attribute(attribute):
+            distances = np.abs(
+                self.__values[attribute][id_array] -
+                self.__values[attribute][pivot]
+            )
         else:
-            for id in ids:
-                distance_id_pairs.append((
-                    self.__mean_absolute_difference(
-                        self.__scenarios[attribute][id],
-                        self.__scenarios[attribute][pivot]
-                    ), id))
-                
-        distance_id_pairs.sort()
-        return distance_id_pairs
+            distances = np.mean(
+                np.abs(
+                    self.__scenarios[attribute][id_array] -
+                    self.__scenarios[attribute][pivot]
+                ), axis=1
+            )
+        order = np.argsort(distances, kind='stable')
+        return [(float(distances[i]), ids[i]) for i in order]
     
     def __get_distance_id_pairs_accurate(
         self, ids: list[int], pivot: int,
@@ -239,37 +238,21 @@ class DistPartition:
 
     
     def partition_relation(self):
-        id_lists = ValueGenerator(
-            relation=self.__relation,
-            base_predicate='',
-            attribute='id'
-        ).get_values()
-    
-        ids = []
-
-        for tuple in id_lists:
-            ids.append(int(tuple[0]))
+        ids = list(self.__all_ids)
 
         self.__metrics.start_partitioning()
         self.__partition(ids)
         self.__metrics.end_partitioning()
-        print('Number of partitions:', self.get_no_of_partitions())
         self.__metrics.start_partitioning_table_creation()
         self.__form_partition_table()
         self.__metrics.end_partitioning_table_creation()
         self.__metrics.start_representative_selection()
         representatives = self.get_partition_representatives()
-        print('Representatives selected')
         self.__metrics.end_representative_selection()
         if self.__dbInfo.has_inter_tuple_correlations():
-            self.__metrics.start_representative_histogram_estimation()
-            self.__compute_histograms(representatives)
-            print('Histograms computed')
-            self.__metrics.end_representative_histogram_estimation()
             self.__metrics.start_required_correlation_estimation()
             self.__compute_required_correlations(representatives)
-            print('Correlations computed')
-            self.__metrics.end_required_correlation_estimation()  
+            self.__metrics.end_required_correlation_estimation()
 
 
     def get_metrics(self):
@@ -310,7 +293,6 @@ class DistPartition:
             'duplicates, init_corr) VALUES '
         
         is_first = True
-        
         for pid, attr in representatives:
             if attr not in self.__dbInfo.get_stochastic_attributes():
                 continue
@@ -346,9 +328,12 @@ class DistPartition:
                                     representative_index])
             
                 med_cov_index = np.argsort(numerator)[len(numerator)//2]
-                req_corr = numerator[med_cov_index] /\
-                    (np.linalg.norm(partition_scenarios[representative_index]) *\
-                        np.linalg.norm(partition_scenarios[med_cov_index]))
+                rep_norm = np.linalg.norm(partition_scenarios[representative_index])
+                med_norm = np.linalg.norm(partition_scenarios[med_cov_index])
+                if rep_norm < 1e-12 or med_norm < 1e-12:
+                    req_corr = 0.0
+                else:
+                    req_corr = numerator[med_cov_index] / (rep_norm * med_norm)
 
             max_dups = len(self.__ids_in_partition[pid])
 
@@ -371,17 +356,19 @@ class DistPartition:
                             relation=self.__relation,
                             attr=attr,
                             base_predicate='partition_id=' + str(pid),
+                            dbInfo=self.__dbInfo,
                             duplicate_vector=[dups],
                             correlation_coeff=[mid_z_coeff]
                         ).generate_scenarios(
                             seed=self.__partitioning_seed,
                             no_of_scenarios=\
                             Hyperparameters.MAD_NO_OF_SAMPLES,
-                            pid=pid, bins=self.__hist_bins[pid, attr])
+                            pid=pid)
                         
                     
-                        corr_coeff_sum = np.sum(np.corrcoef(
-                            scenarios, rowvar=True))
+                        with np.errstate(invalid='ignore'):
+                            corr_coeff_sum = np.nansum(np.corrcoef(
+                                scenarios, rowvar=True))
                         
                         if corr_coeff_sum > req_corr_sum:
                             highest_z_coeff = mid_z_coeff
@@ -398,10 +385,9 @@ class DistPartition:
                 insert_sql += ' (' + str(pid) + ", '" + attr +\
                     "', " + str(dups) + ', ' + str(mid_z_coeff) +\
                     ') '
-                
-        
-        insert_sql +=";"
-        PgConnection.Execute(insert_sql)
+        if not is_first:
+            insert_sql +=";"
+            PgConnection.Execute(insert_sql)
         PgConnection.Commit()
 
 
@@ -437,44 +423,6 @@ class DistPartition:
         num_samples = int(np.ceil(
                     k / (eps_prime*eps_prime)))
         
-        '''
-        bulk_infos = []
-        counter = 0
-        bulk_sample_size = 50000
-        bulk_info_str = dict()
-        tid_lists = []
-        tid_dict = dict()
-
-        for pid, attr in representatives:
-            if attr in self.__dbInfo.get_stochastic_attributes():
-                tid = representatives[(pid, attr)]
-                if attr in bulk_info_str:
-                    bulk_info_str[attr] += ' or '
-                    bulk_info_str[attr] += 'id=' + str(tid)
-                    tid_dict[attr].append(tid)
-                else:
-                    bulk_info_str[attr] = 'id=' + str(tid)
-                    tid_dict[attr] = [tid]
-
-                counter += 1
-
-                if counter == bulk_sample_size:
-                    bulk_infos.append(bulk_info_str)
-                    bulk_info_str = dict()
-                    tid_lists.append(tid_dict)
-                    tid_dict = dict()
-                    counter = 0
-        
-        if len(bulk_info_str) > 0:
-            bulk_infos.append(bulk_info_str)
-            tid_lists.append(tid_dict)
-
-        print('len(tid lists):', len(tid_lists))
-        
-        counter = 0
-        bulk_samples = dict()
-        bulk_info_index = 0
-        '''
         for pid, attr in representatives:
             if attr in self.__dbInfo.get_stochastic_attributes():
                 tid = representatives[(pid, attr)]
@@ -482,49 +430,6 @@ class DistPartition:
                 # Doing step 2 before step 1 for efficiency
 
                 # Step 2: Generate and normalize samples
-                '''
-                if counter == 0:
-                    bulk_info_str = bulk_infos[bulk_info_index]
-                    tid_dict = tid_lists[bulk_info_index]
-                    tids = dict()
-                    indices = dict()
-                    for bulk_attr in tid_dict:
-                        tids[bulk_attr] = tid_dict[bulk_attr]
-                        tids[bulk_attr].sort()
-                        indices[bulk_attr] = dict()
-                        for _ in range(len(tids[bulk_attr])):
-                            indices[bulk_attr][tids[bulk_attr][_]] = _
-                    
-                    bulk_info_index += 1
-                    
-                    for bulk_attr in bulk_info_str:
-                        scenario_generator = \
-                            self.__dbInfo.get_variable_generator_function(
-                                bulk_attr)(
-                                    relation=self.__relation,
-                                    base_predicate=bulk_info_str[bulk_attr]
-                                )
-                        
-                        bulk_samples[bulk_attr] = scenario_generator.generate_scenarios(
-                            seed=Hyperparameters.INIT_SEED,
-                            no_of_scenarios=num_samples
-                        )
-                        
-                        if len(bulk_samples[bulk_attr]) != len(tid_dict[bulk_attr]):
-                            print('Something wrong, len(bulk_samples[bulk_attr])=',
-                                  len(bulk_samples[bulk_attr]), 'len(tid_dict[bulk_attr])=',
-                                  len(tid_dict[bulk_attr]))
-                
-                counter +=1
-                if counter == bulk_sample_size:
-                    counter = 0
-                
-                tid = representatives[(pid, attr)]
-                samples = bulk_samples[attr][indices[attr][tid]]
-                if len(samples) != num_samples:
-                    print('Something wrong, expected', num_samples, 'samples, but got',
-                          len(samples), 'samples')
-                '''
                 individual_scenario_generator = \
                     self.__dbInfo.get_variable_generator_function(attr)(
                         relation=self.__relation,
@@ -579,7 +484,7 @@ class DistPartition:
                                     intervals[-1]
                                 if current_interval_start < last_end:
                                     intervals[-1] = (last_start, current_interval_end,
-                                        (last_prob*(last_end - last_start) + samples_in_current_interval)/\
+                                        (last_prob*(last_end - last_start)*num_samples + samples_in_current_interval)/\
                                             float(num_samples*(current_interval_end - last_start)))
                                 else:
                                     intervals.append(
@@ -607,7 +512,7 @@ class DistPartition:
                             intervals[-1]
                         if current_interval_start < last_end:
                             intervals[-1] = (last_start, current_interval_end,
-                                (last_prob*(last_end - last_start) + samples_in_current_interval)/\
+                                (last_prob*(last_end - last_start)*num_samples + samples_in_current_interval)/\
                                     float(num_samples*(current_interval_end - last_start)))
                         else:
                             intervals.append(
@@ -621,7 +526,7 @@ class DistPartition:
                             samples_in_current_interval/float(
                             num_samples*(current_interval_end - \
                                 current_interval_start))))
-                
+                '''
                 # Step 3: Initialize P_0 and F_0 of the algorithm
                 prev_p = intervals
                 prev_f = []
@@ -711,7 +616,7 @@ class DistPartition:
                     prev_p = new_p
                     if not histogram_changed:
                         break
-
+                '''
                 cdf = []
                 prob_widths = []
                 bin_widths = []
@@ -719,7 +624,7 @@ class DistPartition:
 
                 cumulative_probability = 0
 
-                for interval in new_p:
+                for interval in intervals:
                     start, end, prob_height = interval
                     
                     prob = prob_height * (end - start)
@@ -765,56 +670,25 @@ class DistPartition:
     def __get_stochastic_representative(
         self, partition_id: int, attr: str
     ):
-        partition_scenarios = []
-        for id in self.__ids_in_partition[partition_id]:
-            partition_scenarios.append(self.__scenarios[attr][id])
+        part_ids = np.array(self.__ids_in_partition[partition_id])
+        partition_scenarios = self.__scenarios[attr][part_ids]
         scenario_maxes = np.max(partition_scenarios, axis=0)
         scenario_mins = np.min(partition_scenarios, axis=0)
-        best_tuple_vectorized = self.__ids_in_partition[partition_id][
-            np.argmin(np.sum(np.maximum(
-                np.subtract(scenario_maxes, partition_scenarios),
-                np.subtract(partition_scenarios, scenario_mins)),
-                axis=1))]
-        return best_tuple_vectorized
+        best_idx = np.argmin(np.sum(np.maximum(
+            scenario_maxes - partition_scenarios,
+            partition_scenarios - scenario_mins), axis=1))
+        return int(part_ids[best_idx])
 
 
     def __get_deterministic_representative(
         self, partition_id: int, attr: str
     ):
-        min_value = None
-        max_value = None
-
-        for tuple in self.__ids_in_partition[partition_id]:
-            value = self.__values[attr][tuple]
-            if max_value is None:
-                max_value = value
-                min_value = value
-            if value > max_value:
-                max_value = value
-            if value < min_value:
-                min_value = value
-
-        best_tuple = None
-        best_tuple_distance = None
-
-        for tuple in self.__ids_in_partition[partition_id]:
-            value = self.__values[attr][tuple]
-            
-            dist_from_max = max_value - value
-            dist_from_min = value - min_value
-
-            tuple_distance = dist_from_min
-            if dist_from_max > dist_from_min:
-                tuple_distance = dist_from_max
-        
-            if best_tuple is None:
-                best_tuple = tuple
-                best_tuple_distance = tuple_distance
-            if best_tuple_distance > tuple_distance:
-                best_tuple = tuple
-                best_tuple_distance = tuple_distance
-        
-        return best_tuple            
+        part_ids = np.array(self.__ids_in_partition[partition_id])
+        values = self.__values[attr][part_ids]
+        min_v = float(np.min(values))
+        max_v = float(np.max(values))
+        distances = np.maximum(max_v - values, values - min_v)
+        return int(part_ids[np.argmin(distances)])
 
 
     def get_partition_representatives(self):
@@ -931,7 +805,8 @@ class DistPartition:
                 )
             for distance, id in distances_and_ids_from_farthest_pivot:
                 if distance > multiple*self.__diameter_thresholds[attribute_with_highest_ratio]:
-                    self.__partition(temp_ids, depth+1)
+                    if len(temp_ids) > 0:
+                        self.__partition(temp_ids, depth+1)
                     while distance > multiple*self.__diameter_thresholds[
                         attribute_with_highest_ratio]:
                         multiple += 1
@@ -987,8 +862,35 @@ class DistPartition:
         PgConnection.Execute(index_sql)
         '''
         PgConnection.Commit()
-        print('Formed partitioned tables')
 
     
     def get_no_of_partitions(self):
         return self.__no_of_partitions
+
+    def count_partitions(self, diameter_thresholds: dict) -> int:
+        saved_thresholds = self.__diameter_thresholds
+        saved_no_of_partitions = self.__no_of_partitions
+        saved_ids_in_partition = self.__ids_in_partition
+        saved_partition_no = self.__partition_no
+        saved_tuples_found = self.__tuples_whose_partitions_are_found
+        saved_pivot_generator = self.__pivot_generator
+
+        self.__diameter_thresholds = diameter_thresholds
+        self.__no_of_partitions = 0
+        self.__ids_in_partition = []
+        self.__partition_no = {}
+        self.__tuples_whose_partitions_are_found = 0
+        self.__pivot_generator = Generator(SFC64(SeedSequence(self.__partitioning_seed)))
+
+        ids = list(self.__all_ids)
+        self.__partition(ids)
+        count = self.__no_of_partitions
+
+        self.__diameter_thresholds = saved_thresholds
+        self.__no_of_partitions = saved_no_of_partitions
+        self.__ids_in_partition = saved_ids_in_partition
+        self.__partition_no = saved_partition_no
+        self.__tuples_whose_partitions_are_found = saved_tuples_found
+        self.__pivot_generator = saved_pivot_generator
+
+        return count

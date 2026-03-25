@@ -20,10 +20,14 @@ class Validator:
         self.__dbInfo = dbInfo
         self.__no_of_validation_scenarios = \
             no_of_validation_scenarios
+        self.__scenario_cache = {}
     
 
     def __get_scenarios_and_ids(self, package_dict: dict,
                               attribute: str):
+        cache_key = (attribute, tuple(sorted(package_dict.items())))
+        if cache_key in self.__scenario_cache:
+            return self.__scenario_cache[cache_key]
         base_predicate = ''
         ids_with_multiplicities = []
         for id in package_dict:
@@ -45,7 +49,9 @@ class Validator:
                     )
         else:
             scenarios = []
-        return scenarios, ids_with_multiplicities
+        result = (scenarios, ids_with_multiplicities)
+        self.__scenario_cache[cache_key] = result
+        return result
 
 
     def get_validation_objective_value(self, package_dict) -> float:
@@ -118,22 +124,16 @@ class Validator:
                 package_dict, attribute
             )
         
-        scenario_scores = []
-        for _ in range(self.__no_of_validation_scenarios):
-            idx = 0
-            scenario_score = 0
-            for __, multiplicity in ids_with_multiplicities:
-                scenario_score += \
-                    scenarios[idx][_] * multiplicity
-                idx += 1
-            scenario_scores.append(
-                scenario_score
-            )
-        scenario_scores.sort()
+        mat = np.array(scenarios)
+        mults = np.array([m for _, m in ids_with_multiplicities])
+        scenario_scores = np.sort(mat.T @ mults)[::-1]
         scenarios_to_consider = \
-            int(np.floor((var_constraint.get_probability_threshold()*\
-                      self.__no_of_validation_scenarios)))
-        return scenario_scores[scenarios_to_consider]
+            min(
+                int(np.floor((var_constraint.get_probability_threshold()*\
+                      self.__no_of_validation_scenarios))),
+                self.__no_of_validation_scenarios - 1
+            )
+        return float(scenario_scores[scenarios_to_consider])
 
 
     def get_var_constraint_satisfaction(
@@ -147,22 +147,18 @@ class Validator:
             self.__get_scenarios_and_ids(
                 package_dict, attribute
             )
-        satisfying_scenarios = 0
-        for _ in range(self.__no_of_validation_scenarios):
-            idx = 0
-            scenario_score = 0
-            for __, multiplicity in ids_with_multiplicities:
-                scenario_score += \
-                    scenarios[idx][_] * multiplicity
-                idx += 1
-            if var_constraint.get_inequality_sign() == \
+        mat = np.array(scenarios)
+        mults = np.array([m for _, m in ids_with_multiplicities])
+        scenario_scores = mat.T @ mults
+        limit = var_constraint.get_sum_limit()
+        if var_constraint.get_inequality_sign() == \
                 RelationalOperators.GREATER_THAN_OR_EQUAL_TO:
-                if scenario_score >= var_constraint.get_sum_limit():
-                    satisfying_scenarios += 1
-            elif var_constraint.get_inequality_sign() == \
+            satisfying_scenarios = int(np.sum(scenario_scores >= limit))
+        elif var_constraint.get_inequality_sign() == \
                 RelationalOperators.LESS_THAN_OR_EQUAL_TO:
-                if scenario_score <= var_constraint.get_sum_limit():
-                    satisfying_scenarios += 1
+            satisfying_scenarios = int(np.sum(scenario_scores <= limit))
+        else:
+            satisfying_scenarios = int(np.sum(scenario_scores == limit))
         return satisfying_scenarios / self.__no_of_validation_scenarios
     
 
@@ -182,20 +178,13 @@ class Validator:
             self.__get_scenarios_and_ids(
                 package_dict, attribute
             )
-        scenario_scores = []
-        for scenario_no in range(self.__no_of_validation_scenarios):
-            idx = 0
-            scenario_score = 0
-            for __, multiplicity in ids_with_multiplicities:
-                scenario_score += \
-                    scenarios[idx][scenario_no] * multiplicity
-                idx += 1
-            scenario_scores.append(scenario_score)
-        
+        mat = np.array(scenarios)
+        mults = np.array([m for _, m in ids_with_multiplicities])
+        scenario_scores = mat.T @ mults
         if cvar_constraint.get_tail_type() == TailType.HIGHEST:
-            scenario_scores.sort(reverse=True)
+            scenario_scores = np.sort(scenario_scores)[::-1]
         else:
-            scenario_scores.sort()
+            scenario_scores = np.sort(scenario_scores)
 
         no_of_scenarios_to_consider = \
             int(
@@ -206,8 +195,8 @@ class Validator:
                 )
             )
 
-        return np.average(scenario_scores[
-            0: no_of_scenarios_to_consider])    
+        return float(np.average(scenario_scores[
+            0: no_of_scenarios_to_consider]))    
 
 
     def get_var_constraint_feasibility(

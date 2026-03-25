@@ -8,6 +8,7 @@ from DbInfo.DbInfo import DbInfo
 from OptimizationMetrics.OptimizationMetrics import OptimizationMetrics
 from PgConnection.PgConnection import PgConnection
 from SeedManager.SeedManager import SeedManager
+from StochasticPackageQuery.Constraints.CVaRConstraint.CVaRConstraint import CVaRConstraint
 from StochasticPackageQuery.Constraints.VaRConstraint.VaRConstraint import VaRConstraint
 from StochasticPackageQuery.Query import Query
 from Utils.ArcTangent import ArcTangent
@@ -21,13 +22,16 @@ from ValueGenerator.ValueGenerator import ValueGenerator
 
 class SummarySearch:
 
-    def __init__(self, query: Query,
-                 linear_relaxation: bool,
-                 dbInfo: DbInfo,
-                 init_no_of_scenarios: int,
-                 init_no_of_summaries: int,
-                 no_of_validation_scenarios: int,
-                 approximation_bound: float):
+    def __init__(
+        self, query: Query,
+        linear_relaxation: bool,
+        dbInfo: DbInfo,
+        init_no_of_scenarios: int,
+        init_no_of_summaries: int,
+        no_of_validation_scenarios: int,
+        approximation_bound: float,
+        max_opt_scenarios: int
+    ):
         self.__query = query
         self.__gurobi_env = gp.Env(
             params=GurobiLicense.OPTIONS)
@@ -51,7 +55,9 @@ class SummarySearch:
         )
         self.__approximation_bound = \
             approximation_bound
-
+        self.__max_opt_scenarios =\
+            max_opt_scenarios
+        
         self.__no_of_vars = \
             self.__get_number_of_tuples()
         self.__feasible_no_of_scenarios_to_store = \
@@ -143,8 +149,7 @@ class SummarySearch:
 
     
     def __get_upper_bound_for_vars(self):
-        for constraint in \
-            self.__query.get_constraints():
+        for constraint in self.__query.get_constraints():
             if constraint.is_repeat_constraint():
                 return 1 + constraint.get_repetition_limit()
         return None
@@ -253,7 +258,7 @@ class SummarySearch:
         for summary_index in range(int(no_of_summaries)):
             scenarios_per_summary = \
                 self.__get_scenarios_for_this_summary(
-                    alpha, no_of_scenarios,
+                    no_of_scenarios,
                     no_of_summaries, summary_index
                 )
             # print('scenarios for this summary:', scenarios_per_summary)
@@ -314,7 +319,7 @@ class SummarySearch:
                 var_constraint, no_of_scenarios,
                 no_of_summaries, alpha, previous_package
             )
-        # print('Sum of indicators >=', len(indicators) * var_constraint.get_probability_threshold())
+        #print('Sum of indicators >=', len(indicators) * var_constraint.get_probability_threshold())
         self.__model.addConstr(
             gp.LinExpr([1]*len(indicators), indicators),
             GRB.GREATER_EQUAL,
@@ -355,7 +360,7 @@ class SummarySearch:
         
         scenarios_to_consider = int(np.ceil(
             alpha * len(scenarios)))
-        # print('Scenarios to consider', scenarios_to_consider)
+        #print('Scenarios to consider given alpha=', alpha, 'is', scenarios_to_consider)
         
         no_of_scenarios_considered = 0
         coefficients = []
@@ -474,7 +479,22 @@ class SummarySearch:
                             alpha[var_constraint_index],
                             previous_package
                         )
-                    var_constraint_index += 1 
+                    var_constraint_index += 1
+                else:
+                    attribute = constraint.get_attribute_name()
+                    sum_limit = constraint.get_sum_limit()
+                    self.__add_feasible_no_of_scenarios(attribute)
+                    coefficients = []
+                    for tuple_scenarios in self.__scenarios[attribute]:
+                        coefficients.append(np.median(tuple_scenarios))
+                    
+                    gurobi_inequality = GRB.LESS_EQUAL
+                    if constraint.get_inequality_sign() == RelationalOperators.GREATER_THAN_OR_EQUAL_TO:
+                        gurobi_inequality = GRB.GREATER_EQUAL
+                    self.__model.addConstr(
+                        gp.LinExpr(coefficients, self.__vars),
+                        gurobi_inequality, sum_limit
+                    )
 
     
     def __add_objective_to_model(
@@ -586,7 +606,7 @@ class SummarySearch:
 
 
     def __get_scenarios_for_this_summary(
-        self, alpha, no_of_scenarios,
+        self, no_of_scenarios,
         no_of_summaries, summary_index
     ):
         scenarios_per_summary = \
@@ -604,7 +624,7 @@ class SummarySearch:
         no_of_summaries, summary_index):
         scenarios_per_summary = \
             self.__get_scenarios_for_this_summary(
-                alpha, no_of_scenarios,
+                no_of_scenarios,
                 no_of_summaries, summary_index
             )
         return int(np.ceil(
@@ -622,9 +642,13 @@ class SummarySearch:
                 alpha_history = alpha_history[:1]
             clean_history.append(alpha_history)
         alpha_histories = clean_history
-        # print('Initial alpha history:', alpha_histories)
+        #print('Initial alpha history:', alpha_histories)
         best_feasible_package = previous_package
-        best_objective_value = 0
+        if self.__query.get_objective().get_objective_type() == \
+            ObjectiveType.MAXIMIZATION:
+            best_objective_value = float('-inf')
+        else:
+            best_objective_value = float('inf')
         alpha_histories_copy = alpha_histories
 
         while True:
@@ -638,7 +662,7 @@ class SummarySearch:
                             var_constraint_index]
                     alpha_data = []
                     y_data = []
-                    # print('Alpha history', alpha_history)
+                    #print('Alpha history', alpha_history)
                     for alpha, y in alpha_history:
                         alpha_data.append(alpha)
                         y_data.append(y)
@@ -647,13 +671,17 @@ class SummarySearch:
                     if len(alpha_data) == 1:
                         next_alpha = 1
                     else:
-                        # print('Alpha data:', alpha_data)
-                        # print('y data:', y_data)
+                        #print('Alpha data:', alpha_data)
+                        #print('y data:', y_data)
                         params, _ = optimize.curve_fit(
                             ArcTangent.func, alpha_data,
                             y_data)
                         next_alpha = np.tan(-params[1]/params[0])
-                    # print('Next alpha', next_alpha)
+                    if next_alpha < 0:
+                        next_alpha = 0
+                    elif next_alpha > 1:
+                        next_alpha = 1
+                    #print('Next alpha', next_alpha)
                     alphas.append(next_alpha)
                     no_of_scenarios_considered.append(
                         self.__get_no_of_scenarios_considered(
@@ -676,16 +704,22 @@ class SummarySearch:
                 alpha=alphas,
                 previous_package=previous_package
             )
+
+            print("Getting package")
             previous_package = self.__get_package()
-            
+            print('Package found: ', previous_package)
+
             if self.__validator.is_package_validation_feasible(
                 previous_package):
                 
+                print('Package is validation feasible')
                 if self.__validator.is_package_1_pm_epsilon_approximate(
                     previous_package, self.__approximation_bound,
                     upper_bound):
-                        return (previous_package, upper_bound)
+                    print('Package is near-optimal')
+                    return (previous_package, upper_bound)
                 else:
+                    print('Package is not near optimal, objective value=', self.__validator.get_validation_objective_value(previous_package), ', upper bound=', upper_bound)
                     objective_value = \
                         self.__validator.get_validation_objective_value(
                             previous_package)
@@ -699,17 +733,40 @@ class SummarySearch:
                         best_objective_value = objective_value
             
             else:
-                objective_value = self.__validator.get_validation_objective_value(
-                    previous_package
-                )
-                if self.__query.get_objective().get_objective_type() == \
-                    ObjectiveType.MAXIMIZATION:
-                    if objective_value < upper_bound:
-                        ...
-                        # upper_bound = objective_value
-                elif objective_value > upper_bound:
-                    ...
-                    # upper_bound = objective_value
+                all_cvarified_violated = True
+                for constraint in self.__query.get_constraints():
+                    if constraint.is_var_constraint():
+                        cvarified = CVaRConstraint()
+                        cvarified.set_percentage_of_scenarios(
+                            (1 - constraint.get_probability_threshold()) * 100
+                        )
+                        if constraint.get_inequality_sign() == \
+                            RelationalOperators.GREATER_THAN_OR_EQUAL_TO:
+                            cvarified.set_tail_type('l')
+                            cvarified.set_inequality_sign('>')
+                        else:
+                            cvarified.set_tail_type('h')
+                            cvarified.set_inequality_sign('<')
+                        cvarified.set_attribute_name(
+                            constraint.get_attribute_name()
+                        )
+                        cvarified.set_sum_limit(constraint.get_sum_limit())
+                        if self.__validator.get_cvar_constraint_feasibility(
+                            previous_package, cvarified
+                        ):
+                            all_cvarified_violated = False
+                            break
+                if all_cvarified_violated:
+                    objective_value = \
+                        self.__validator.get_validation_objective_value(
+                            previous_package
+                        )
+                    if self.__query.get_objective().get_objective_type() == \
+                        ObjectiveType.MAXIMIZATION:
+                        if objective_value < upper_bound:
+                            upper_bound = objective_value
+                    elif objective_value > upper_bound:
+                        upper_bound = objective_value
 
             var_constraint_index = 0
             for constraint in self.__query.get_constraints():
@@ -735,9 +792,6 @@ class SummarySearch:
         probabilistically_unconstrained_package = \
             self.__get_package()
         
-        print('Probabilistically unconstrained package:',
-              probabilistically_unconstrained_package)
-        
         if probabilistically_unconstrained_package is None:
             self.__metrics.end_execution(
                 0, 0)
@@ -752,21 +806,31 @@ class SummarySearch:
 
         if self.__validator.is_package_validation_feasible(
             probabilistically_unconstrained_package):
-            # print('Probabilistically unconstrained package is feasible')
-            # for constraint in self.__query.get_constraints():
-                # if constraint.is_var_constraint():
-                    #print('Passes', self.__validator.get_var_constraint_satisfaction(
-                    #    package_dict=probabilistically_unconstrained_package,
-                    #    var_constraint=constraint
-                    #), 'of scenarios')
+            print('Probabilistically unconstrained package is feasible')
+            for constraint in self.__query.get_constraints():
+                if constraint.is_var_constraint():
+                    print('Passes', self.__validator.get_var_constraint_satisfaction(
+                        package_dict=probabilistically_unconstrained_package,
+                        var_constraint=constraint
+                    ), 'of scenarios')
             self.__metrics.end_execution(upper_bound, 0)
             return (probabilistically_unconstrained_package,
                     upper_bound)
 
         else:
-            #print('Probabilistically unconstrained package is infeasible')
+            print('Probabilistically unconstrained package is infeasible')
             for constraint in self.__query.get_constraints():
                 if constraint.is_var_constraint():
+                    print('Passes', self.__validator.get_var_constraint_satisfaction(
+                        package_dict=probabilistically_unconstrained_package,
+                        var_constraint=constraint
+                    ), 'of scenarios')
+
+            constraint_no = 0
+
+            for constraint in self.__query.get_constraints():
+                if constraint.is_var_constraint():
+                    constraint_no += 1
                     alpha_histories.append([])
                     alpha_histories[-1].append(
                         (0, self.__validator.get_var_constraint_satisfaction(
@@ -774,12 +838,14 @@ class SummarySearch:
                                 constraint) - constraint.get_probability_threshold()
                         )
                     )
+                    print('Constraint', constraint_no, 'parsed')
+                    
         
         no_of_summaries = self.__init_no_of_summaries
         
-        while no_of_scenarios <= self.__no_of_validation_scenarios:
-            #print('Trying with', no_of_scenarios, 'scenarios and',
-            #      no_of_summaries, 'summaries')
+        while no_of_scenarios <= self.__max_opt_scenarios:
+            print('Trying with', no_of_scenarios, 'scenarios and',
+                  no_of_summaries, 'summaries')
             package, upper_bound = self.__csa_solve(
                 no_of_scenarios=no_of_scenarios,
                 no_of_summaries=no_of_summaries,
@@ -795,6 +861,7 @@ class SummarySearch:
                         self.__validator.get_validation_objective_value(
                             package
                         )
+                    print("Feasible and near-optimal package found")
                     self.__metrics.end_execution(
                         validation_objective_value,
                         no_of_scenarios)
@@ -802,14 +869,19 @@ class SummarySearch:
                             validation_objective_value)
                 else:
                     no_of_summaries += 1
-                    #print('Increasing number of summaries to',
-                    #      no_of_summaries)
-            
+                    print('Increasing number of summaries to',
+                          no_of_summaries)
+            elif no_of_scenarios == self.__max_opt_scenarios:
+                print('Could not find a package with',
+                      self.__max_opt_scenarios, 'scenarios')
+                break
             else:
                 no_of_scenarios *= 2
-                #print('Increasing number of scenarios to',
-                #      no_of_scenarios)
-        self.__metrics.end_execution(0)
+                if no_of_scenarios > self.__max_opt_scenarios:
+                    no_of_scenarios = self.__max_opt_scenarios
+                print('Increasing number of scenarios to',
+                      no_of_scenarios)
+        self.__metrics.end_execution(0, no_of_scenarios)
         return None
 
 

@@ -25,6 +25,9 @@ class Naive:
         self.__query = query
         self.__gurobi_env = gp.Env(
             params=GurobiLicense.OPTIONS)
+        self.__gurobi_env.setParam(
+            'OutputFlag', 0
+        )
         self.__model = gp.Model(
             env=self.__gurobi_env)
         self.__is_linear_relaxation = \
@@ -446,7 +449,7 @@ class Naive:
             self.__get_package()
         
         if probabilistically_unconstrained_package is None:
-            return None
+            return None, 0.0
 
         upper_bound = \
             self.__validator.get_validation_objective_value(
@@ -495,6 +498,6 @@ class Naive:
 
             no_of_scenarios *= 2
         
-        return None
+        return None, 0.0
 
 

@@ -12,9 +12,9 @@ class QuantityScenarioGenerator(ScenarioGenerator):
                  base_predicate = ''):
         self.__relation = relation
         self.__base_predicate = base_predicate
-        self.__quantity_data = self.__get_quantity_attributes()
+        self.__quantity_data = None
 
-    def __get_quantity_attributes(self):
+    def __get_quantity_data(self):
         if len(self.__base_predicate) == 0:
             self.__base_predicate = '1=1'
         sql_query = \
@@ -26,6 +26,8 @@ class QuantityScenarioGenerator(ScenarioGenerator):
         return PgConnection.Fetch()
     
     def generate_scenarios(self, seed, no_of_scenarios):
+        if self.__quantity_data is None:
+            self.__quantity_data = self.__get_quantity_data()
         quantity_means = []
         quantity_variances = []
         rng = Generator(SFC64(SeedSequence(seed)))
@@ -74,7 +76,7 @@ class QuantityScenarioGenerator(ScenarioGenerator):
         self, seed: int, no_of_scenarios: int,
         partition_id: int
     ) -> list[list[float]]:
-        self.__relation == self.__relation +\
+        self.__relation = self.__relation +\
             ' AS r INNER JOIN ' + \
                 Relation_Prefixes.PARTITION_RELATION_PREFIX +\
                     self.__relation + ' AS p ON r.id=p.tuple_id'

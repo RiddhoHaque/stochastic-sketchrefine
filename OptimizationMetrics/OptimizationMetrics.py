@@ -63,3 +63,21 @@ class OptimizationMetrics:
               self.__optimizer_runtime)
         print('Number of scenarios needed:',
               self.__number_of_scenarios_needed)
+
+    def get_runtime(self):
+        return self.__runtime
+
+    def get_objective_value(self):
+        return self.__objective_value
+
+    def get_optimizer_runtime(self):
+        return self.__optimizer_runtime
+
+    def get_number_of_optimization_calls(self):
+        return self.__number_of_optimization_calls
+
+    def add_optimizer_metrics(
+        self, optimizer_runtime: float, num_calls: int
+    ):
+        self.__optimizer_runtime += optimizer_runtime
+        self.__number_of_optimization_calls += num_calls

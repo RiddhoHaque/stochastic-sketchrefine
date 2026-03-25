@@ -14,9 +14,9 @@ class PriceScenarioGenerator(ScenarioGenerator):
                  base_predicate = ''):
         self.__relation = relation
         self.__base_predicate = base_predicate
-        self.__price_data = self.__get_price_attributes()
+        self.__price_data = None
     
-    def __get_price_attributes(self):
+    def __get_price_data(self):
         if len(self.__base_predicate) == 0:
             self.__base_predicate = '1=1'
         sql_query = \
@@ -30,6 +30,8 @@ class PriceScenarioGenerator(ScenarioGenerator):
     def generate_scenarios(
         self, seed: int, no_of_scenarios: int,
     ) -> list[list[float]]:
+        if self.__price_data is None:
+            self.__price_data = self.__get_price_data()
         price_means = []
         price_variances = []
         rng = Generator(SFC64(SeedSequence(seed)))
@@ -78,7 +80,7 @@ class PriceScenarioGenerator(ScenarioGenerator):
         self, seed: int, no_of_scenarios: int,
         partition_id: int
     ) -> list[list[float]]:
-        self.__relation == self.__relation +\
+        self.__relation = self.__relation +\
             ' AS r INNER JOIN ' + \
                 Relation_Prefixes.PARTITION_RELATION_PREFIX +\
                     self.__relation + ' AS p ON r.id=p.tuple_id'
