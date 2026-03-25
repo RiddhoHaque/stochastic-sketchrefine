@@ -1,0 +1,10 @@
+# Large data files — obtain separately per README instructions
+Data/lineitem.tbl
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Virtual environment
+venv/
+.venv/
