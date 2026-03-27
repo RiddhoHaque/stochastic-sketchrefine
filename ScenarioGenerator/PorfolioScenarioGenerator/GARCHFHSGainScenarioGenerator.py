@@ -32,27 +32,26 @@ def _process_ticker(ticker, param_group, residuals, seed, no_of_scenarios):
     n_res = len(residuals)
     gains_by_idx: dict[int, list[float]] = {}
 
-    for _ in range(no_of_scenarios):
-        # Sample indices into residuals array for all steps at once
-        z_indices   = rng.integers(0, n_res, size=max_steps)
-        z_seq       = residuals[z_indices]
+    # Generate all residual indices for all scenarios at once: shape (S, T)
+    z_indices = rng.integers(0, n_res, size=(no_of_scenarios, max_steps))
+    z_mat     = residuals[z_indices]   # (S, T) — fancy index into residuals array
 
-        h_t         = last_h
-        cum_log_ret = 0.0
-        step        = 0
+    # Vectorized GARCH simulation across S scenarios simultaneously
+    h           = np.full(no_of_scenarios, last_h,  dtype=np.float64)  # (S,)
+    cum_log_ret = np.zeros(no_of_scenarios,          dtype=np.float64)  # (S,)
 
-        for date in sorted_dates:
-            # Simulate from current step up to this sell_after checkpoint
-            while step < date:
-                z           = z_seq[step]
-                r_t         = z * np.sqrt(h_t)
-                h_t         = omega + alpha1 * r_t ** 2 + beta1 * h_t
-                cum_log_ret += r_t
-                step        += 1
+    step = 0
+    for date in sorted_dates:
+        while step < date:
+            z_col        = z_mat[:, step]                       # (S,)
+            r_t          = z_col * np.sqrt(h)                   # (S,)
+            h            = omega + alpha1 * r_t ** 2 + beta1 * h  # (S,)
+            cum_log_ret += r_t                                   # (S,)
+            step        += 1
 
-            gain = price * (np.exp(cum_log_ret) - 1.0)
-            tup_idx = sell_after_map[date]
-            gains_by_idx.setdefault(tup_idx, []).append(gain)
+        gains    = price * (np.exp(cum_log_ret) - 1.0)  # (S,)
+        tup_idx  = sell_after_map[date]
+        gains_by_idx[tup_idx] = gains.tolist()
 
     return gains_by_idx
 

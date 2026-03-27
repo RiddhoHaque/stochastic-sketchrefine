@@ -43,10 +43,16 @@ Actual price data is downloaded from Yahoo Finance at runtime.
 
 ## Step 1 — Populate the database tables
 
-Run the setup script from the **project root**:
+Run the setup script from the **project root**.
 
+On Linux / macOS:
 ```bash
 bash Data/setup_demo_data.sh
+```
+
+On Windows:
+```bat
+Data\setup_demo_data.bat
 ```
 
 This script performs five steps in order:
@@ -69,7 +75,37 @@ data already cached.
 
 ---
 
-## Step 2 — Run the benchmark
+## Step 2 — Partition the portfolio relations
+
+From the **project root**:
+
+```bash
+python demo_partitioning.py
+```
+
+This partitions any `GBM_Portfolio_YYYY` and `GARCH_Portfolio_YYYY` tables that
+exceed `Hyperparameters.SIZE_THRESHOLD` rows, using pre-configured gain and price
+diameter thresholds.  Tables below the threshold are left untouched.
+
+Console output looks like:
+
+```
+SIZE_THRESHOLD        = <N>
+PARTITION_COUNT_LIMIT = <0.8 * N>
+
+GBM relations above SIZE_THRESHOLD:   ['GBM_Portfolio_2015', ...]
+GARCH relations above SIZE_THRESHOLD: ['GARCH_Portfolio_2015', ...]
+```
+
+Followed by per-relation partitioning metrics.
+
+> **Note:** If you want to search for optimal diameter thresholds before
+> partitioning, run `gbm_fhs_diameter_threshold_search.py` first and update
+> `Hyperparameters` with the results.
+
+---
+
+## Step 3 — Run the benchmark
 
 From the **project root**:
 
@@ -81,7 +117,7 @@ The script:
 
 - Generates `100` gain scenarios using both GBM and GARCH-FHS for the
   year-pairs **2015–16, 2017–18, 2019–20, and 2021–22**.
-- Computes the absolute prediction error at sell-after days **10, 100, and 200**
+- Computes the rate-of-return prediction error at sell-after days **10, 100, and 200**
   for each ticker.
 - Caches any missing actual closing prices in PostgreSQL (no re-download if
   already cached from Step 1).
@@ -112,7 +148,7 @@ Results written to Evaluation/benchmark_results.json
 
 ---
 
-## Step 3 — Generate plots
+## Step 4 — Generate plots
 
 From the **project root**:
 
@@ -124,7 +160,7 @@ Reads `Evaluation/benchmark_results.json` and writes two figures:
 
 | File | Description |
 |------|-------------|
-| `Evaluation/rmse_boxplots.png` | 3 × 4 grid of boxplots — rows are sell-after days (10, 100, 200); columns are year-pairs (2015–16, 2017–18, 2019–20, 2021–22). Each panel shows the distribution of per-ticker absolute prediction errors for GBM (blue) and GARCH-FHS (orange) on a log scale. |
+| `Evaluation/rmse_boxplots.png` | 3 × 4 grid of boxplots — rows are sell-after days (10, 100, 200); columns are year-pairs (2015–16, 2017–18, 2019–20, 2021–22). Each panel shows the distribution of per-ticker rate-of-return prediction errors for GBM (blue) and GARCH-FHS (orange) on a log scale. |
 | `Evaluation/runtime_comparison.png` | Grouped bar chart comparing scenario generation runtimes by year-pair, with mean reference lines. |
 
 ---
@@ -133,20 +169,24 @@ Reads `Evaluation/benchmark_results.json` and writes two figures:
 
 ```
 Data/
-  setup_demo_data.sh          # One-shot setup script
-  garch_init.sql              # GARCH table schemas
-  gbm_init.sql                # GBM table schemas
-  garch_table_builder.py      # Executes garch_init.sql via Python
-  gbm_table_builder.py        # Executes gbm_init.sql via Python
-  reconcile_portfolio_tables.py
+  setup_demo_data.sh               # One-shot setup script (Linux/macOS)
+  setup_demo_data.bat              # One-shot setup script (Windows)
+  garch_init.sql                   # GARCH table schemas
+  gbm_init.sql                     # GBM table schemas
+  garch_table_builder.py           # Executes garch_init.sql via Python
+  gbm_table_builder.py             # Executes gbm_init.sql via Python
+  reconcile_portfolio_tables.py    # Reconciles GBM/GARCH (ticker, sell_after) pairs
   Portfolio/
-    yfinance_garch_fetcher.py # Fits GARCH(1,1) and populates GARCH tables
-    yfinance_gbm_fetcher.py   # Fits GBM and populates GBM tables
+    yfinance_garch_fetcher.py      # Fits GARCH(1,1) and populates GARCH tables
+    yfinance_gbm_fetcher.py        # Fits GBM and populates GBM tables
 
-benchmark_gain_methods.py     # Runs benchmark, writes JSON
-plot_benchmark_results.py     # Reads JSON, writes PNG plots
+demo_partitioning.py               # Partitions qualifying portfolio relations
+gbm_fhs_diameter_threshold_search.py  # Searches for optimal diameter thresholds
+benchmark_gain_methods.py          # Runs benchmark, writes JSON
+plot_benchmark_results.py          # Reads JSON, writes PNG plots
 Evaluation/
-  benchmark_results.json      # Output of benchmark (auto-created)
-  rmse_boxplots.png           # Output of plot script (auto-created)
-  runtime_comparison.png      # Output of plot script (auto-created)
+  benchmark_results.json           # Output of benchmark (auto-created)
+  rmse_boxplots.png                # Output of plot script (auto-created)
+  runtime_comparison.png           # Output of plot script (auto-created)
+  summary_statistics.txt           # Output of plot script (auto-created)
 ```

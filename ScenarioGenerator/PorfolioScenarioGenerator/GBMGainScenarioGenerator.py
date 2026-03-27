@@ -44,24 +44,34 @@ def _process_ticker(ticker, group, seed, no_of_scenarios):
     total_steps = len(expanded_dt)
 
     extended_scenarios = int(no_of_scenarios * 1.2)
-    Z = rng.standard_normal(size=(extended_scenarios, total_steps)).astype(np.float32)
+    Z = rng.standard_normal(size=(extended_scenarios, total_steps), dtype=np.float32)
 
-    log_increments  = drift_coeff * expanded_dt + last_volatility * sqrt_dt * Z
-    cum_log_prices  = np.cumsum(log_increments, axis=1)
-    price_paths     = last_price * np.exp(cum_log_prices)
-
-    # Trim bottom and top 10% by final price
-    final_prices = price_paths[:, -1]
-    low  = (extended_scenarios - no_of_scenarios) // 2
-    high = low + no_of_scenarios
-    sorted_indices = np.argsort(final_prices)[low:high]
-    trimmed_paths  = price_paths[sorted_indices]
+    log_increments = drift_coeff * expanded_dt + last_volatility * sqrt_dt * Z
 
     extraction_indices = [SUBSTEPS * (i + 1) - 1 for i in range(len(sorted_dates))]
 
-    rng.shuffle(trimmed_paths)
+    # Use reduceat to sum log_increments within each checkpoint interval, avoiding
+    # materializing the full (extended, total_steps) cumsum and exp matrices.
+    # boundaries[i] = first column of the i-th interval.
+    boundaries = [0] + [ei + 1 for ei in extraction_indices[:-1]]
+    segment_sums           = np.add.reduceat(log_increments, boundaries, axis=1)  # (extended, n_dates)
+    cum_log_at_checkpoints = np.cumsum(segment_sums, axis=1)                       # (extended, n_dates)
+
+    # Trim bottom and top 10% by final price (last checkpoint = total cumulative log return)
+    final_prices = last_price * np.exp(cum_log_at_checkpoints[:, -1])
+    low          = (extended_scenarios - no_of_scenarios) // 2
+    high         = low + no_of_scenarios
+    trim_indices = np.argsort(final_prices)[low:high]
+
+    # Shuffle indices instead of the full path matrix
+    rng.shuffle(trim_indices)
+
+    prices_at_checkpoints = last_price * np.exp(
+        cum_log_at_checkpoints[trim_indices]
+    )  # (no_of_scenarios, n_dates)
+
     return {
-        sell_after_map[date]: (trimmed_paths[:, extraction_indices[i]] - last_price).tolist()
+        sell_after_map[date]: (prices_at_checkpoints[:, i] - last_price).tolist()
         for i, date in enumerate(sorted_dates)
     }
 

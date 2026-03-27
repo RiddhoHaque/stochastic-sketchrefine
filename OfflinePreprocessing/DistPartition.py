@@ -15,6 +15,10 @@ from Utils.Relation_Prefixes import Relation_Prefixes
 from ValueGenerator.ValueGenerator import ValueGenerator
 
 
+class _CountLimitExceeded(Exception):
+    """Raised inside __partition to abort early during count_partitions."""
+
+
 class DistPartition:
 
     def __init__(self, relation: str,
@@ -28,6 +32,7 @@ class DistPartition:
         self.__total_tuples = self.__get_number_of_tuples()
         
         self.__no_of_partitions = 0
+        self.__count_limit = None   # set only during count_partitions
         self.__partitioning_seed = SeedManager.get_next_seed()
         self.__tuples_whose_partitions_are_found = 0
         self.__partition_no = dict()
@@ -752,6 +757,9 @@ class DistPartition:
             self.__partition_no[ids[0]] = self.__no_of_partitions
             self.__no_of_partitions += 1
             self.__tuples_whose_partitions_are_found += 1
+            if self.__count_limit is not None and \
+                    self.__no_of_partitions > self.__count_limit:
+                raise _CountLimitExceeded
             return
         
         attributes = []
@@ -807,9 +815,9 @@ class DistPartition:
                 if distance > multiple*self.__diameter_thresholds[attribute_with_highest_ratio]:
                     if len(temp_ids) > 0:
                         self.__partition(temp_ids, depth+1)
-                    while distance > multiple*self.__diameter_thresholds[
-                        attribute_with_highest_ratio]:
-                        multiple += 1
+                    multiple = int(np.ceil(
+                        distance / self.__diameter_thresholds[attribute_with_highest_ratio]
+                    ))
                     temp_ids = []
                 temp_ids.append(id)
             
@@ -823,6 +831,9 @@ class DistPartition:
             self.__ids_in_partition[-1].append(id)
         self.__no_of_partitions += 1
         self.__tuples_whose_partitions_are_found += len(ids)
+        if self.__count_limit is not None and \
+                self.__no_of_partitions > self.__count_limit:
+            raise _CountLimitExceeded
         #print(self.__no_of_partitions, ' partitions formed for',
         #      self.__tuples_whose_partitions_are_found, 'tuples')
 
@@ -867,30 +878,39 @@ class DistPartition:
     def get_no_of_partitions(self):
         return self.__no_of_partitions
 
-    def count_partitions(self, diameter_thresholds: dict) -> int:
-        saved_thresholds = self.__diameter_thresholds
-        saved_no_of_partitions = self.__no_of_partitions
-        saved_ids_in_partition = self.__ids_in_partition
-        saved_partition_no = self.__partition_no
-        saved_tuples_found = self.__tuples_whose_partitions_are_found
-        saved_pivot_generator = self.__pivot_generator
+    def count_partitions(self, diameter_thresholds: dict,
+                         count_limit: int = None) -> int:
+        saved_thresholds    = self.__diameter_thresholds
+        saved_partitions    = self.__no_of_partitions
+        saved_ids           = self.__ids_in_partition
+        saved_partition_no  = self.__partition_no
+        saved_tuples_found  = self.__tuples_whose_partitions_are_found
+        saved_pivot_gen     = self.__pivot_generator
+        saved_count_limit   = self.__count_limit
 
-        self.__diameter_thresholds = diameter_thresholds
-        self.__no_of_partitions = 0
-        self.__ids_in_partition = []
-        self.__partition_no = {}
+        self.__diameter_thresholds              = diameter_thresholds
+        self.__no_of_partitions                 = 0
+        self.__ids_in_partition                 = []
+        self.__partition_no                     = {}
         self.__tuples_whose_partitions_are_found = 0
         self.__pivot_generator = Generator(SFC64(SeedSequence(self.__partitioning_seed)))
+        self.__count_limit = count_limit  # enables early exit when set
 
-        ids = list(self.__all_ids)
-        self.__partition(ids)
+        exceeded = False
+        try:
+            self.__partition(list(self.__all_ids))
+        except _CountLimitExceeded:
+            exceeded = True
+
         count = self.__no_of_partitions
 
-        self.__diameter_thresholds = saved_thresholds
-        self.__no_of_partitions = saved_no_of_partitions
-        self.__ids_in_partition = saved_ids_in_partition
-        self.__partition_no = saved_partition_no
+        self.__diameter_thresholds              = saved_thresholds
+        self.__no_of_partitions                 = saved_partitions
+        self.__ids_in_partition                 = saved_ids
+        self.__partition_no                     = saved_partition_no
         self.__tuples_whose_partitions_are_found = saved_tuples_found
-        self.__pivot_generator = saved_pivot_generator
+        self.__pivot_generator                  = saved_pivot_gen
+        self.__count_limit                      = saved_count_limit
 
-        return count
+        # Return a value guaranteed to be above the limit when exceeded
+        return (count_limit + 1) if exceeded else count

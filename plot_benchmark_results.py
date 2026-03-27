@@ -101,7 +101,7 @@ def main():
 
     for row, sa in enumerate(target_sas):
         sa_str      = str(sa)
-        ylabel_text = f'Abs. error ($)\nSA = {sa}d'
+        ylabel_text = f'Rate-of-return error\nSA = {sa}d'
         for col, year in enumerate(years):
             ax         = axes_2d[row, col]
             year_str   = str(year)
@@ -119,7 +119,7 @@ def main():
                           show_ylabel, ylabel_text, ylim)
 
     fig.suptitle(
-        f'GBM vs GARCH-FHS  |  Absolute Gain Prediction Error  '
+        f'GBM vs GARCH-FHS  |  Rate-of-Return Prediction Error  '
         f'({no_of_scenarios} scenarios)',
         fontsize=FONT_TITLE + 2, fontweight='bold',
     )
@@ -180,7 +180,7 @@ def main():
 
     lines = []
     lines.append('\n' + '=' * len(divider))
-    lines.append('Absolute Gain Prediction Error — Summary Statistics')
+    lines.append('Rate-of-Return Prediction Error — Summary Statistics')
     lines.append('=' * len(divider))
 
     # Header row 1: stat group labels

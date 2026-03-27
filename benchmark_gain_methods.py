@@ -240,10 +240,10 @@ def load_or_download_closes(conn, tickers, year, start_date, end_date):
 def compute_errors_per_sa(param_rows, scenarios, sa_to_date, actual_close,
                            target_sas):
     """
-    For each sell_after in target_sas compute per-ticker absolute prediction error:
-        abs( mean_simulated_gain[sa] - actual_gain[sa] )
+    For each sell_after in target_sas compute per-ticker rate-of-return prediction error:
+        abs( mean_simulated_gain[sa]/price - actual_gain[sa]/price )
 
-    Returns dict  sa_int -> {ticker: abs_error}.
+    Returns dict  sa_int -> {ticker: rate_of_return_error}.
     """
     # Build ticker -> {sa: [scenario gains], price}  (only target sell_afters)
     target_set = set(target_sas)
@@ -277,7 +277,7 @@ def compute_errors_per_sa(param_rows, scenarios, sa_to_date, actual_close,
                 continue
             actual_gain = actual_price - cutoff_price
             mean_sim    = float(np.mean(sim_gains))
-            errors_by_sa[sa][ticker] = abs(mean_sim - actual_gain)
+            errors_by_sa[sa][ticker] = abs(mean_sim - actual_gain) / cutoff_price
 
     return errors_by_sa
 
