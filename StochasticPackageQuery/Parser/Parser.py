@@ -5,7 +5,6 @@ from StochasticPackageQuery.Parser.State.AddRepeatConstraintState import AddRepe
 from StochasticPackageQuery.Parser.State.BasePredicateEditingState import BasePredicateEditingState
 from StochasticPackageQuery.Parser.State.ConstraintAttributeNameEditingState import ConstraintAttributeNameEditingState
 from StochasticPackageQuery.Parser.State.ConstraintInequalitySettingState import ConstraintInequalitySettingState
-from StochasticPackageQuery.Parser.State.ConstraintPercentageEditingState import ConstraintPercentageEditingState
 from StochasticPackageQuery.Parser.State.ConstraintSumLimitSettingState import ConstraintSumLimitSettingState
 from StochasticPackageQuery.Parser.State.ConstraintTailTypeEditingState import ConstraintTailTypeEditingState
 from StochasticPackageQuery.Parser.State.ObjectiveAttributeNameEditingState import ObjectiveAttributeNameEditingState
@@ -22,6 +21,11 @@ from StochasticPackageQuery.Parser.State.RubberDuckState import RubberDuckState
 from StochasticPackageQuery.Parser.State.State import State
 from StochasticPackageQuery.Parser.State.TurnToVaRConstraintState import TurnToVaRConstraintState
 from StochasticPackageQuery.Parser.State.TurnToCVaRConstraintState import TurnToCVaRConstraintState
+from StochasticPackageQuery.Parser.State.CVaRProbabilityEditingState import CVaRProbabilityEditingState
+from StochasticPackageQuery.Parser.State.CommitCVaRConstraintProbabilityState import CommitCVaRConstraintProbabilityState
+from StochasticPackageQuery.Parser.State.TurnToCVaRObjectiveState import TurnToCVaRObjectiveState
+from StochasticPackageQuery.Parser.State.ObjectiveTailTypeEditingState import ObjectiveTailTypeEditingState
+from StochasticPackageQuery.Parser.State.ObjectivePercentageEditingState import ObjectivePercentageEditingState
 from StochasticPackageQuery.Parser.Transition.Transition import Transition
 from StochasticPackageQuery.Query import Query
 
@@ -340,6 +344,73 @@ class Parser:
         objective_attribute_editing_state.add_transition(
             Transition(')', self.__query_successfully_parsed_state)
         )
+        self.__query_successfully_parsed_state.add_transition(
+            Transition(' ', self.__query_successfully_parsed_state)
+        )
+        cvar_objective_identified_state = TurnToCVaRObjectiveState()
+        self.__query_successfully_parsed_state.add_transition(
+            Transition('i', cvar_objective_identified_state)
+        )
+        objective_in_read_state = State()
+        cvar_objective_identified_state.add_transition(
+            Transition('n', objective_in_read_state)
+        )
+        space_after_objective_in_state = State()
+        objective_in_read_state.add_transition(
+            Transition(' ', space_after_objective_in_state)
+        )
+        space_after_objective_in_state.add_transition(
+            Transition(' ', space_after_objective_in_state)
+        )
+        higher_obj_tail_type_state = ObjectiveTailTypeEditingState()
+        lower_obj_tail_type_state = ObjectiveTailTypeEditingState()
+        space_after_objective_in_state.add_transition(
+            Transition('h', higher_obj_tail_type_state)
+        )
+        space_after_objective_in_state.add_transition(
+            Transition('l', lower_obj_tail_type_state)
+        )
+        higher_obj_keyword_almost_read_state = self.__expect_phrase(
+            higher_obj_tail_type_state, 'ighe'
+        )
+        lower_obj_keyword_almost_read_state = self.__expect_phrase(
+            lower_obj_tail_type_state, 'owe'
+        )
+        obj_tail_type_read_state = State()
+        higher_obj_keyword_almost_read_state.add_transition(
+            Transition('r', obj_tail_type_read_state)
+        )
+        lower_obj_keyword_almost_read_state.add_transition(
+            Transition('r', obj_tail_type_read_state)
+        )
+        space_after_obj_tail_type_state = State()
+        obj_tail_type_read_state.add_transition(
+            Transition(' ', space_after_obj_tail_type_state)
+        )
+        space_after_obj_tail_type_state.add_transition(
+            Transition(' ', space_after_obj_tail_type_state)
+        )
+        obj_percentage_reading_state = ObjectivePercentageEditingState()
+        for numerical in self.__numericals:
+            space_after_obj_tail_type_state.add_transition(
+                Transition(numerical, obj_percentage_reading_state)
+            )
+            obj_percentage_reading_state.add_transition(
+                Transition(numerical, obj_percentage_reading_state)
+            )
+        space_after_obj_percentage_state = State()
+        obj_percentage_reading_state.add_transition(
+            Transition(' ', space_after_obj_percentage_state)
+        )
+        space_after_obj_percentage_state.add_transition(
+            Transition(' ', space_after_obj_percentage_state)
+        )
+        obj_tail_keyword_almost_read_state = self.__expect_phrase(
+            space_after_obj_percentage_state, 'tai'
+        )
+        obj_tail_keyword_almost_read_state.add_transition(
+            Transition('l', self.__query_successfully_parsed_state)
+        )
         add_deterministic_constraint_state = \
             AddDeterministicConstraintState()
         ready_for_constraints_state.add_transition(
@@ -571,17 +642,17 @@ class Parser:
             Transition('l', lowest_tail_type_detected_state)
         )
         highest_keyword_almost_read_state = self.__expect_phrase(
-            highest_tail_type_detected_state, 'ighes'
+            highest_tail_type_detected_state, 'ighe'
         )
         lowest_keyword_almost_read_state = self.__expect_phrase(
-            lowest_tail_type_detected_state, 'owes'
+            lowest_tail_type_detected_state, 'owe'
         )
         tail_type_read_state = State()
         highest_keyword_almost_read_state.add_transition(
-            Transition('t', tail_type_read_state)
+            Transition('r', tail_type_read_state)
         )
         lowest_keyword_almost_read_state.add_transition(
-            Transition('t', tail_type_read_state)
+            Transition('r', tail_type_read_state)
         )
         space_after_tail_type_read_state = State()
         tail_type_read_state.add_transition(
@@ -591,7 +662,7 @@ class Parser:
             Transition(' ', space_after_tail_type_read_state)
         )
         constraint_percentage_reading_state = \
-            ConstraintPercentageEditingState()
+            CVaRProbabilityEditingState()
         for numerical in self.__numericals:
             space_after_tail_type_read_state.add_transition(
                 Transition(numerical, constraint_percentage_reading_state)
@@ -600,38 +671,19 @@ class Parser:
                 Transition(numerical, constraint_percentage_reading_state)
             )
         space_after_constraint_percentage_state = State()
-        percentage_read_state = State()
         constraint_percentage_reading_state.add_transition(
             Transition(' ', space_after_constraint_percentage_state)
         )
         space_after_constraint_percentage_state.add_transition(
             Transition(' ', space_after_constraint_percentage_state)
         )
-        constraint_percentage_reading_state.add_transition(
-            Transition('%', percentage_read_state)
+        after_tai_state = self.__expect_phrase(
+            space_after_constraint_percentage_state, 'tai')
+        commit_cvar_constraint_state = CommitCVaRConstraintProbabilityState()
+        after_tai_state.add_transition(
+            Transition('l', commit_cvar_constraint_state)
         )
-        space_after_constraint_percentage_state.add_transition(
-            Transition('%', percentage_read_state)
-        )
-        space_after_percentage_state = State()
-        percentage_read_state.add_transition(
-            Transition(' ', space_after_percentage_state)
-        )
-        space_after_percentage_state.add_transition(
-            Transition(' ', space_after_percentage_state)
-        )
-        of_read_state = self.__expect_phrase(
-            space_after_percentage_state, 'of')
-        space_after_of_state = State()
-        of_read_state.add_transition(
-            Transition(' ', space_after_of_state)
-        )
-        space_after_of_state.add_transition(
-            Transition(' ', space_after_of_state)
-        )
-        cases_read_state = self.__expect_phrase(
-            space_after_of_state, 'cases')
-        cases_read_state.add_transition(
+        commit_cvar_constraint_state.add_transition(
             Transition(' ', expected_sum_limit_parsed_state)
         )
         expected_sum_limit_parsed_state.add_transition(

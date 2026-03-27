@@ -188,7 +188,7 @@ class ParserUnitTest(unittest.TestCase):
             "SUM(Price) <= 5000 AND",
             "SUM(Gain) >= -50 WITH PROBABILITY >= 0.95 AND",
             "EXPECTED SUM(Gain) >= 40 AND",
-            "EXPECTED SUM(Gain) >= -70 IN LOWEST 5% OF CASES",
+            "EXPECTED SUM(Gain) >= -70 IN LOWER 0.05 TAIL",
             "MAXIMIZE EXPECTED SUM(Gain)",
         ]
         parser = Parser()
@@ -250,6 +250,31 @@ class ParserUnitTest(unittest.TestCase):
         self.assertEqual(query.get_objective().get_attribute_name(),
                          'gain')
 
+
+    def test_with_cvar_objective(self):
+        spaql_plus_query = [
+            "SELECT PACKAGE(*) AS Portfolio",
+            "FROM Stock_Investments AS S",
+            "REPEAT 1",
+            "SUCH THAT COUNT(*) <= 10",
+            "MINIMIZE EXPECTED SUM(Gain) IN LOWER 0.05 TAIL",
+        ]
+        parser = Parser()
+        query = parser.parse(spaql_plus_query)
+        self.assertEqual(query.get_projected_attributes(), '*')
+        self.assertEqual(query.get_package_alias(), 'portfolio')
+        self.assertEqual(query.get_relation(), 'stock_investments')
+        self.assertEqual(query.get_relation_alias(), 's')
+        self.assertTrue(query.get_objective().is_cvar_objective())
+        self.assertEqual(query.get_objective().get_objective_type(),
+                         ObjectiveType.MINIMIZATION)
+        self.assertEqual(query.get_objective().get_stochasticity(),
+                         Stochasticity.STOCHASTIC)
+        self.assertEqual(query.get_objective().get_attribute_name(), 'gain')
+        self.assertEqual(query.get_objective().get_tail_type(),
+                         TailType.LOWEST)
+        self.assertEqual(query.get_objective().get_percentage_of_scenarios(),
+                         0.05)
 
     def main(self):
         self.base_query_lines = [

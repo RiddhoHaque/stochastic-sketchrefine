@@ -18,6 +18,7 @@ class Query:
         self.__base_predicate = ''
         self.__constraints = []
         self.__objective = Objective()
+        self.__cvar_probability_buffer = ''
 
     def set_projected_attributes(self, projected_attributes: str):
         self.__projected_attributes = projected_attributes
@@ -163,6 +164,23 @@ class Query:
 
     def add_character_to_objective_attribute(self, char: chr):
         self.__objective.add_character_to_attribute_name(char)
+
+    def accumulate_cvar_probability(self, char: chr):
+        self.__cvar_probability_buffer += char
+
+    def commit_cvar_constraint_probability(self):
+        prob = float(self.__cvar_probability_buffer)
+        self.__cvar_probability_buffer = ''
+        self.__constraints[-1].set_percentage_of_scenarios(100 * prob)
+
+    def set_objective_as_cvar(self):
+        self.__objective.set_as_cvar()
+
+    def add_character_to_objective_tail_type(self, char: chr):
+        self.__objective.set_tail_type(char)
+
+    def add_character_to_objective_percentage_of_scenarios(self, char: chr):
+        self.__objective.add_character_to_percentage_of_scenarios(char)
 
     def get_objective(self):
         return self.__objective
