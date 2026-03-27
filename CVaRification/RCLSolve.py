@@ -35,15 +35,24 @@ class RCLSolve:
                  approximation_bound: float,
                  sampling_tolerance: float,
                  bisection_threshold: float,
-                 max_opt_scenarios: int):
+                 max_opt_scenarios: int,
+                 gurobi_env = None,
+                 check_feasibility = False):
         self.__query = query
-        self.__gurobi_env = gp.Env(
-            params=GurobiLicense.OPTIONS)
+        if gurobi_env is None:
+            self.__gurobi_env = gp.Env(
+                params=GurobiLicense.OPTIONS)
+        else:
+            self.__gurobi_env = gurobi_env
         self.__gurobi_env.setParam(
             'OutputFlag', 0
         )
         self.__model = gp.Model(
             env=self.__gurobi_env)
+        if check_feasibility:
+            self.__model.Params.SolutionLimit = 1
+            self.__model.Params.MIPFocus = 1
+        self.__check_feasibility = check_feasibility
         self.__is_linear_relaxation = \
             linear_relaxation
         self.__init_no_of_scenarios = \
@@ -61,9 +70,12 @@ class RCLSolve:
             sampling_tolerance
         self.__bisection_threshold = \
             bisection_threshold
-        self.__max_opt_scenarios = \
-            max_opt_scenarios
-        
+        if not check_feasibility:
+            self.__max_opt_scenarios = \
+                max_opt_scenarios
+        else:
+            self.__max_opt_scenarios = \
+                init_no_of_scenarios
         self.__no_of_vars = \
             self.__get_number_of_tuples()
         self.__feasible_no_of_scenarios_to_store = \
@@ -112,6 +124,9 @@ class RCLSolve:
             'RCLSolve', self.__is_linear_relaxation
         )
 
+    
+    def get_validator(self):
+        return self.__validator
     
     def __get_stochastic_attributes(self):
         attributes = set()
@@ -537,7 +552,9 @@ class RCLSolve:
     def __add_objective_to_model(
         self, objective: Objective,
         no_of_scenarios: int):
-
+        if self.__check_feasibility:
+            self.__model.setObjective(0, GRB.MAXIMIZE)
+            return
         attr = objective.get_attribute_name()
         coefficients = []
 
@@ -670,6 +687,8 @@ class RCLSolve:
         self, package, package_with_indices,
         no_of_scenarios
     ) -> bool:
+        if self.__check_feasibility:
+            return False
         if package is None:
             return False, 0
         objective_value_optimization_scenarios =\
@@ -703,6 +722,8 @@ class RCLSolve:
         self, objective_value: float,
         objective_upper_bound: float
     ):
+        if self.__check_feasibility:
+            return True
         objective = self.__query.get_objective()
 
         if objective.get_objective_type() == \
@@ -804,6 +825,8 @@ class RCLSolve:
         package, no_of_scenarios,
         constraint
     ) -> bool:
+        if self.__check_feasibility:
+            return False
         if package is None:
             return False, constraint.get_sum_limit()
         
@@ -849,6 +872,8 @@ class RCLSolve:
         package, no_of_scenarios,
         constraint
     ) -> bool:
+        if self.__check_feasibility:
+            return False
         if package is None:
             return False, constraint.get_sum_limit()
         
