@@ -24,7 +24,8 @@ class Refine:
         sketch_objective_value: float,
         sketch_package: dict[int, int],
         query: Query, dbInfo: DbInfo,
-        linear_relaxation: bool
+        linear_relaxation: bool,
+        check_feasibility: bool = False
     ):
 
         self.__partition_groups = partition_groups
@@ -151,6 +152,7 @@ class Refine:
                 for _ in range(int(self.__sketch_package[partition]) % num_duplicates):
                     self.__partition_variable_multiplicity[partition][_] += 1
         self.__is_linear_relaxation = linear_relaxation
+        self.__check_feasibility = check_feasibility
 
     def get_tuples_in_each_partition(self):
         partition_predicate = ''
@@ -220,11 +222,14 @@ class Refine:
                 attributes.add(
                     constraint.get_attribute_name())
         
-        if self.__query.get_objective().get_stochasticity()\
-            == Stochasticity.STOCHASTIC:
+        if self.__query.get_objective().is_cvar_objective():
+            attributes.add(self.__query.get_objective().get_attribute_name())
+        elif self.__query.get_objective().is_stochasticity_set() and \
+                self.__query.get_objective().get_stochasticity() \
+                == Stochasticity.STOCHASTIC:
             attributes.add(self.__query.get_objective().\
                            get_attribute_name())
-        
+
         return attributes
 
     
@@ -235,8 +240,9 @@ class Refine:
                 attributes.add(
                     constraint.get_attribute_name())
         
-        if self.__query.get_objective().get_stochasticity() \
-            == Stochasticity.DETERMINISTIC:
+        if self.__query.get_objective().is_stochasticity_set() and \
+                self.__query.get_objective().get_stochasticity() \
+                == Stochasticity.DETERMINISTIC:
             attributes.add(
                 self.__query.get_objective().\
                     get_attribute_name())
@@ -488,7 +494,8 @@ class Refine:
                 self.__chosen_tuple_multiplicity,
             tuple_ids=tuple_ids,
             sketch_objective_value=\
-                self.__sketch_objective_value
+                self.__sketch_objective_value,
+            check_feasibility=self.__check_feasibility
         )
 
         refined_package, objective_value,\

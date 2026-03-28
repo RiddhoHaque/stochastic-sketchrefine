@@ -19,7 +19,8 @@ class Sketch:
     def __init__(
         self, query: Query, dbInfo: DbInfo,
         no_of_opt_scenarios: int,
-        is_lp_relaxation = False
+        is_lp_relaxation = False,
+        check_feasibility: bool = False
     ):
         self.__query = query
         self.__dbInfo = dbInfo
@@ -94,7 +95,7 @@ class Sketch:
         self.__is_lp_relaxation = is_lp_relaxation
         
         print('Initializing sketch validator')
-        validator = SketchValidator(
+        self.__validator = SketchValidator(
             query=self.__query,
             dbInfo=self.__dbInfo,
             no_of_validation_scenarios=\
@@ -105,6 +106,7 @@ class Sketch:
                 self.__partition_id_in_duplicate_vector,
             partition_ids=self.__partition_ids
         )
+        validator = self.__validator
         
         print('Initializing Sketch Solver')
         self.__solver = SketchRCLSolve(
@@ -120,7 +122,8 @@ class Sketch:
             bisection_threshold=Hyperparameters.BISECTION_THRESHOLD,
             partition_sizes=self.__partition_sizes,
             duplicate_vector=self.__duplicate_vector,
-            partition_id_for_each_index=self.__partition_id_in_duplicate_vector
+            partition_id_for_each_index=self.__partition_id_in_duplicate_vector,
+            check_feasibility=check_feasibility
         )
         print('Sketch Initialized')
 
@@ -204,8 +207,12 @@ class Sketch:
                 attributes.add(
                     constraint.get_attribute_name())
         
-        if self.__query.get_objective().get_stochasticity() \
-            == Stochasticity.STOCHASTIC:
+        if self.__query.get_objective().is_cvar_objective():
+            attributes.add(
+                self.__query.get_objective().get_attribute_name())
+        elif self.__query.get_objective().is_stochasticity_set() and \
+                self.__query.get_objective().get_stochasticity() \
+                == Stochasticity.STOCHASTIC:
             attributes.add(
                 self.__query.get_objective().\
                     get_attribute_name())
@@ -219,8 +226,9 @@ class Sketch:
                 attributes.add(
                     constraint.get_attribute_name())
         
-        if self.__query.get_objective().get_stochasticity() \
-            == Stochasticity.DETERMINISTIC:
+        if self.__query.get_objective().is_stochasticity_set() and \
+                self.__query.get_objective().get_stochasticity() \
+                == Stochasticity.DETERMINISTIC:
             attributes.add(
                 self.__query.get_objective().\
                     get_attribute_name())

@@ -124,6 +124,10 @@ class RCLSolve:
             'RCLSolve', self.__is_linear_relaxation
         )
 
+        if self.__query.get_objective().is_cvar_objective():
+            self.__V = None
+            self.__Zs = []
+
     
     def get_validator(self):
         return self.__validator
@@ -137,8 +141,14 @@ class RCLSolve:
             if constraint.is_risk_constraint():
                 attributes.add(
                     constraint.get_attribute_name())
-        if self.__query.get_objective().get_stochasticity() \
-            == Stochasticity.STOCHASTIC:
+        if self.__query.get_objective().is_cvar_objective():
+            attributes.add(
+                self.__query.get_objective().\
+                    get_attribute_name()
+            )
+        elif self.__query.get_objective().is_stochasticity_set() and \
+             self.__query.get_objective().get_stochasticity() \
+             == Stochasticity.STOCHASTIC:
             attributes.add(
                 self.__query.get_objective().\
                     get_attribute_name()
@@ -153,8 +163,9 @@ class RCLSolve:
                 attributes.add(
                     constraint.get_attribute_name())
         
-        if self.__query.get_objective().get_stochasticity() \
-            == Stochasticity.DETERMINISTIC:
+        if self.__query.get_objective().is_stochasticity_set() and \
+           self.__query.get_objective().get_stochasticity() \
+           == Stochasticity.DETERMINISTIC:
             attributes.add(
                 self.__query.get_objective().\
                     get_attribute_name()
@@ -182,7 +193,7 @@ class RCLSolve:
         return None
     
     
-    def __add_variables_to_model(self) -> None:
+    def __add_variables_to_model(self, no_of_scenarios: int) -> None:
         max_repetition = \
             self.__get_upper_bound_for_vars()
         type = GRB.INTEGER
@@ -206,7 +217,28 @@ class RCLSolve:
                         vtype=type
                     )
                 )
-    
+
+        if not self.__check_feasibility and self.__query.get_objective().is_cvar_objective():
+            self.__V = self.__model.addVar(
+                vtype=GRB.CONTINUOUS
+            )
+            self.__Zs = []
+            for _ in range(no_of_scenarios):
+                if self.__query.get_objective().get_tail_type() == \
+                    TailType.LOWEST:
+                    self.__Zs.append(
+                        self.__model.addVar(
+                            ub = 0,
+                            vtype=GRB.CONTINUOUS
+                        )
+                    )
+                else:
+                    self.__Zs.append(
+                        self.__model.addVar(
+                            lb = 0,
+                            vtype=GRB.CONTINUOUS
+                        )
+                    )
 
     def __get_gurobi_inequality(
             self, inequality_sign: RelationalOperators):
@@ -341,10 +373,10 @@ class RCLSolve:
         self, cvar_constraint: CVaRConstraint,
         no_of_scenarios: int
     ):
-        return int(np.floor(
+        return max(1, int(np.floor(
             (cvar_constraint.get_percentage_of_scenarios()\
                 *no_of_scenarios)/100
-        ))
+        )))
 
 
     def __preprocess_lcvar_prefix_sums(self, no_of_scenarios: int) -> None:
@@ -539,7 +571,8 @@ class RCLSolve:
                         coefficients.append(np.median(tuple_scenarios))
                         
                     gurobi_inequality = GRB.LESS_EQUAL
-                    if constraint.get_inequality_sign() == RelationalOperators.GREATER_THAN_OR_EQUAL_TO:
+                    if constraint.get_inequality_sign() == \
+                        RelationalOperators.GREATER_THAN_OR_EQUAL_TO:
                         gurobi_inequality = GRB.GREATER_EQUAL
                     self.__model.addConstr(
                         gp.LinExpr(coefficients, self.__vars),
@@ -547,6 +580,18 @@ class RCLSolve:
                     )
 
                 risk_constraint_index += 1    
+        
+        if not self.__check_feasibility and self.__query.get_objective().is_cvar_objective():
+            attribute = self.__query.get_objective().get_attribute_name()
+            for idx in range(no_of_scenarios):
+                scenario_coefficients = [self.__scenarios[attribute][i][idx] for i in range(self.__no_of_vars)]
+                lin_expr = gp.LinExpr(scenario_coefficients, self.__vars)
+                if self.__query.get_objective().get_tail_type() == \
+                    TailType.LOWEST:
+                    self.__model.addConstr(self.__Zs[idx] <= lin_expr - self.__V)
+                else:
+                    self.__model.addConstr(self.__Zs[idx] >= lin_expr - self.__V)
+
 
     
     def __add_objective_to_model(
@@ -555,6 +600,38 @@ class RCLSolve:
         if self.__check_feasibility:
             self.__model.setObjective(0, GRB.MAXIMIZE)
             return
+        
+        if objective.is_cvar_objective():
+            is_maximize = (objective.get_objective_type() == ObjectiveType.MAXIMIZATION)
+            tail_is_lowest = (objective.get_tail_type() == TailType.LOWEST)
+            if is_maximize != tail_is_lowest:
+                raise NotImplementedError(
+                    'Direct CVaR LP optimization is only supported for '
+                    'MAXIMIZE+LOWEST and MINIMIZE+HIGHEST tail. '
+                    'MINIMIZE+LOWEST and MAXIMIZE+HIGHEST are non-convex '
+                    '(minimizing a concave / maximizing a convex function) '
+                    'and cannot be expressed as a single LP. '
+                    'Use CVaROptimizerBaseline (check_feasibility=True) instead.'
+                )
+            coefficients = [1]
+            for _ in range(len(self.__Zs)):
+                coefficients.append(1.0/(
+                    objective.get_percentage_of_scenarios() *\
+                        no_of_scenarios))
+
+            if objective.get_objective_type() == ObjectiveType.MINIMIZATION:
+                self.__model.setObjective(
+                    gp.LinExpr(coefficients, [self.__V] + self.__Zs),
+                    GRB.MINIMIZE
+                )
+                return
+
+            self.__model.setObjective(
+                gp.LinExpr(coefficients, [self.__V] + self.__Zs),
+                GRB.MAXIMIZE
+            )
+            return      
+        
         attr = objective.get_attribute_name()
         coefficients = []
 
@@ -611,7 +688,10 @@ class RCLSolve:
         
         self.__model = gp.Model(
             env=self.__gurobi_env)
-        self.__add_variables_to_model()
+        if self.__check_feasibility:
+            self.__model.Params.SolutionLimit = 1
+            self.__model.Params.MIPFocus = 1
+        self.__add_variables_to_model(no_of_scenarios)
         self.__add_constraints_to_model(
             no_of_scenarios,
             no_of_scenarios_to_consider,
@@ -664,14 +744,48 @@ class RCLSolve:
         attr = self.__query.get_objective().get_attribute_name()
         if no_of_scenarios <= \
             self.__feasible_no_of_scenarios_to_store:
+            if self.__query.get_objective().is_cvar_objective():
+                idxs = list(package_with_indices.keys())
+                mults = np.array([package_with_indices[i] for i in idxs])
+                mat = np.array([self.__scenarios[attr][i] for i in idxs])
+                scenario_scores = mat.T @ mults
+                tail_type = self.__query.get_objective().get_tail_type()
+                if tail_type == TailType.HIGHEST:
+                    scenario_scores = np.sort(scenario_scores)[::-1]
+                else:
+                    scenario_scores = np.sort(scenario_scores)
+                k = max(1, int(np.floor(
+                    self.__query.get_objective().get_percentage_of_scenarios() *
+                    no_of_scenarios
+                )))
+                return float(np.average(scenario_scores[:k]))
             sum = 0
             for idx in package_with_indices:
                 sum += np.average(self.__scenarios[attr][idx]) * \
                     package_with_indices[idx]
-                #print('Index in package:', idx)
-                #print('Avg. Value:', np.average(self.__scenarios[attr][idx]))
             return sum
         
+        if self.__query.get_objective().is_cvar_objective():
+            all_scenario_scores = []
+            total_scenarios = 0
+            while total_scenarios < no_of_scenarios:
+                self.__add_feasible_no_of_scenarios(attr)
+                total_scenarios += self.__feasible_no_of_scenarios_to_store
+                idxs = list(package_with_indices.keys())
+                mults = np.array([package_with_indices[i] for i in idxs])
+                mat = np.array([self.__scenarios[attr][i] for i in idxs])
+                all_scenario_scores.extend((mat.T @ mults).tolist())
+            scenario_scores = np.array(all_scenario_scores)
+            tail_type = self.__query.get_objective().get_tail_type()
+            if tail_type == TailType.HIGHEST:
+                scenario_scores = np.sort(scenario_scores)[::-1]
+            else:
+                scenario_scores = np.sort(scenario_scores)
+            k = max(1, int(np.floor(
+                self.__query.get_objective().get_percentage_of_scenarios() * total_scenarios
+            )))
+            return float(np.average(scenario_scores[:k]))
+
         sum = 0
         total_scenarios = 0
         while total_scenarios < no_of_scenarios:
@@ -679,7 +793,7 @@ class RCLSolve:
             total_scenarios += self.__feasible_no_of_scenarios_to_store
             for idx in package_with_indices:
                 for value in self.__scenarios[attr][idx]:
-                    sum += value * self.__vars[idx].x
+                    sum += value * package_with_indices[idx]
         return sum / total_scenarios
     
 
@@ -688,7 +802,7 @@ class RCLSolve:
         no_of_scenarios
     ) -> bool:
         if self.__check_feasibility:
-            return False
+            return False, 0.0
         if package is None:
             return False, 0
         objective_value_optimization_scenarios =\
@@ -794,8 +908,8 @@ class RCLSolve:
         if constraint.get_tail_type() == TailType.HIGHEST:
             scenario_scores.reverse()
         scenarios_to_consider = \
-            int(np.floor((constraint.get_percentage_of_scenarios()\
-                      *no_of_scenarios)/100))
+            max(1, int(np.floor((constraint.get_percentage_of_scenarios()\
+                      *no_of_scenarios)/100)))
         return np.average(
             scenario_scores[0:scenarios_to_consider])
     
@@ -826,7 +940,7 @@ class RCLSolve:
         constraint
     ) -> bool:
         if self.__check_feasibility:
-            return False
+            return False, constraint.get_sum_limit()
         if package is None:
             return False, constraint.get_sum_limit()
         
@@ -873,7 +987,7 @@ class RCLSolve:
         constraint
     ) -> bool:
         if self.__check_feasibility:
-            return False
+            return False, constraint.get_sum_limit()
         if package is None:
             return False, constraint.get_sum_limit()
         
@@ -1436,13 +1550,13 @@ class RCLSolve:
                     cvar_upper_bounds.append(constraint.get_sum_limit())
                     if constraint.is_cvar_constraint():
                         no_of_scenarios_to_consider =\
-                            int(np.floor(constraint.get_percentage_of_scenarios()\
-                                    *no_of_scenarios/100.0))
+                            max(1, int(np.floor(constraint.get_percentage_of_scenarios()\
+                                    *no_of_scenarios/100.0)))
                     elif constraint.is_var_constraint():
                         no_of_scenarios_to_consider =\
-                            int(np.ceil(
+                            max(1, int(np.ceil(
                                 (1-constraint.get_probability_threshold()
-                            )*no_of_scenarios))
+                            )*no_of_scenarios)))
                     min_no_of_scenarios_to_consider.append(
                         no_of_scenarios_to_consider
                     )
@@ -1465,9 +1579,9 @@ class RCLSolve:
                             )
                         )
                         no_of_scenarios_to_consider =\
-                            int(np.floor(
+                            max(1, int(np.floor(
                                 constraint.get_percentage_of_scenarios()\
-                                 *no_of_scenarios/100.0))
+                                 *no_of_scenarios/100.0)))
                         min_no_of_scenarios_to_consider.append(
                             no_of_scenarios_to_consider
                         )
@@ -1492,9 +1606,9 @@ class RCLSolve:
                             )
                         )
                         no_of_scenarios_to_consider =\
-                            int(np.floor(
+                            max(1, int(np.floor(
                                 cvarified_constraint.get_percentage_of_scenarios()\
-                                 *no_of_scenarios/100.0))
+                                 *no_of_scenarios/100.0)))
                         min_no_of_scenarios_to_consider.append(
                             no_of_scenarios_to_consider
                         )
@@ -1527,7 +1641,7 @@ class RCLSolve:
                 probabilistically_unconstrained_package)
             if probabilistically_unconstrained_package is None:
                 self.__metrics.end_execution(0, 0)
-                return None
+                return (None, 0.0)
         
             probabilistically_unconstrained_package_with_indices = \
                 self.__get_package_with_indices()

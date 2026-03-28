@@ -40,7 +40,8 @@ class SketchRCLSolve:
         bisection_threshold: float,
         partition_sizes: list[int],
         duplicate_vector: list[int],
-        partition_id_for_each_index: list[int]
+        partition_id_for_each_index: list[int],
+        check_feasibility: bool = False
     ):
         self.__query = query
         self.__gurobi_env = gp.Env(
@@ -50,6 +51,10 @@ class SketchRCLSolve:
         )
         self.__model = gp.Model(
             env=self.__gurobi_env)
+        self.__check_feasibility = check_feasibility
+        if check_feasibility:
+            self.__model.Params.SolutionLimit = 1
+            self.__model.Params.MIPFocus = 1
         self.__is_linear_relaxation = \
             linear_relaxation
         
@@ -88,6 +93,11 @@ class SketchRCLSolve:
         self.__partition_ids_for_each_index = partition_id_for_each_index
         self.__bounded_partition = None
         self.__partition_multiplicity_upper_bound = None
+
+        if self.__query.get_objective().is_cvar_objective():
+            self.__V = None
+            self.__Zs = []
+
         print('Sketch Solver Initialized')
 
     def set_partition_upper_bound(self, partition_id, upper_bound):
@@ -123,7 +133,7 @@ class SketchRCLSolve:
         return None
     
     
-    def __add_variables_to_model(self) -> None:
+    def __add_variables_to_model(self, no_of_scenarios: int) -> None:
         max_repetition = \
             self.__get_upper_bound_for_repetitions()
         type = GRB.INTEGER
@@ -159,6 +169,19 @@ class SketchRCLSolve:
                             lb=0, vtype=type
                         )
                     )
+
+        if not self.__check_feasibility and \
+                self.__query.get_objective().is_cvar_objective():
+            self.__V = self.__model.addVar(vtype=GRB.CONTINUOUS)
+            self.__Zs = []
+            for _ in range(no_of_scenarios):
+                if self.__query.get_objective().get_tail_type() == \
+                        TailType.LOWEST:
+                    self.__Zs.append(
+                        self.__model.addVar(ub=0, vtype=GRB.CONTINUOUS))
+                else:
+                    self.__Zs.append(
+                        self.__model.addVar(lb=0, vtype=GRB.CONTINUOUS))
     
 
     def __get_gurobi_inequality(
@@ -228,9 +251,9 @@ class SketchRCLSolve:
         self, cvar_constraint: CVaRConstraint,
         no_of_scenarios: int
     ):
-        return int(np.floor(
+        return max(1, int(np.floor(
             (cvar_constraint.get_percentage_of_scenarios()\
-                *no_of_scenarios)/100))
+                *no_of_scenarios)/100)))
 
 
     def __preprocess_lcvar_prefix_sums(self) -> None:
@@ -429,12 +452,57 @@ class SketchRCLSolve:
                         gp.LinExpr(coefficients, self.__vars), gurobi_inequality, sum_limit)
                 
                 risk_constraint_index += 1
-                
 
-    
+        if not self.__check_feasibility and \
+                self.__query.get_objective().is_cvar_objective():
+            attribute = self.__query.get_objective().get_attribute_name()
+            for idx in range(no_of_scenarios):
+                scenario_coefficients = [
+                    self.__scenarios[attribute][i][idx]
+                    for i in range(self.__no_of_vars)
+                ]
+                lin_expr = gp.LinExpr(scenario_coefficients, self.__vars)
+                if self.__query.get_objective().get_tail_type() == \
+                        TailType.LOWEST:
+                    self.__model.addConstr(
+                        self.__Zs[idx] <= lin_expr - self.__V)
+                else:
+                    self.__model.addConstr(
+                        self.__Zs[idx] >= lin_expr - self.__V)
+
+
     def __add_objective_to_model(
         self, objective: Objective,
         no_of_scenarios: int):
+
+        if self.__check_feasibility:
+            self.__model.setObjective(0, GRB.MAXIMIZE)
+            return
+
+        if objective.is_cvar_objective():
+            is_maximize = (objective.get_objective_type() == ObjectiveType.MAXIMIZATION)
+            tail_is_lowest = (objective.get_tail_type() == TailType.LOWEST)
+            if is_maximize != tail_is_lowest:
+                raise NotImplementedError(
+                    'Direct CVaR LP optimization is only supported for '
+                    'MAXIMIZE+LOWEST and MINIMIZE+HIGHEST tail. '
+                    'MINIMIZE+LOWEST and MAXIMIZE+HIGHEST are non-convex '
+                    'and cannot be expressed as a single LP. '
+                    'Use check_feasibility=True instead.'
+                )
+            coefficients = [1]
+            for _ in range(len(self.__Zs)):
+                coefficients.append(
+                    1.0 / (objective.get_percentage_of_scenarios() * no_of_scenarios))
+            if objective.get_objective_type() == ObjectiveType.MINIMIZATION:
+                self.__model.setObjective(
+                    gp.LinExpr(coefficients, [self.__V] + self.__Zs),
+                    GRB.MINIMIZE)
+            else:
+                self.__model.setObjective(
+                    gp.LinExpr(coefficients, [self.__V] + self.__Zs),
+                    GRB.MAXIMIZE)
+            return
 
         attr = objective.get_attribute_name()
         coefficients = []
@@ -471,8 +539,11 @@ class SketchRCLSolve:
         
         self.__model = gp.Model(
             env=self.__gurobi_env)
+        if self.__check_feasibility:
+            self.__model.Params.SolutionLimit = 1
+            self.__model.Params.MIPFocus = 1
         print('Adding Variables to model')
-        self.__add_variables_to_model()
+        self.__add_variables_to_model(no_of_scenarios)
         print('Adding Constraints to model')
         self.__add_constraints_to_model(
             no_of_scenarios,
@@ -525,18 +596,39 @@ class SketchRCLSolve:
         if package_with_indices is None:
             return 0
         attr = self.__query.get_objective().get_attribute_name()
-        
+
+        if self.__query.get_objective().is_cvar_objective():
+            idxs = list(package_with_indices.keys())
+            mults = np.array([package_with_indices[i] for i in idxs])
+            mat = np.array([
+                self.__scenarios[attr][i][:self.__no_of_scenarios]
+                for i in idxs
+            ])
+            scenario_scores = mat.T @ mults
+            tail_type = self.__query.get_objective().get_tail_type()
+            if tail_type == TailType.HIGHEST:
+                scenario_scores = np.sort(scenario_scores)[::-1]
+            else:
+                scenario_scores = np.sort(scenario_scores)
+            k = max(1, int(np.floor(
+                self.__query.get_objective().get_percentage_of_scenarios() *
+                self.__no_of_scenarios
+            )))
+            return float(np.average(scenario_scores[:k]))
+
         sum = 0
         for idx in package_with_indices:
             sum += np.average(self.__scenarios[attr][idx]) * \
                 package_with_indices[idx]
-        
+
         return sum
     
 
     def __is_objective_value_relative_diff_high(
         self, package, package_with_indices,
     ):
+        if self.__check_feasibility:
+            return False, 0.0
         if package is None:
             return False, 0
         objective_value_optimization_scenarios =\
@@ -568,6 +660,8 @@ class SketchRCLSolve:
         self, objective_value: float,
         objective_upper_bound: float
     ):
+        if self.__check_feasibility:
+            return True
         objective = self.__query.get_objective()
 
         if objective.get_objective_type() == \
@@ -1116,12 +1210,12 @@ class SketchRCLSolve:
                     cvar_upper_bounds.append(constraint.get_sum_limit())
                     if constraint.is_cvar_constraint():
                         no_of_scenarios_to_consider =\
-                            int(np.floor(constraint.get_percentage_of_scenarios()\
-                                     *no_of_scenarios/100.0))
+                            max(1, int(np.floor(constraint.get_percentage_of_scenarios()\
+                                     *no_of_scenarios/100.0)))
                     else:
                         no_of_scenarios_to_consider =\
-                            int(np.floor((1 - constraint.get_probability_threshold())\
-                                     *no_of_scenarios))
+                            max(1, int(np.floor((1 - constraint.get_probability_threshold())\
+                                     *no_of_scenarios)))
                     min_no_of_scenarios_to_consider.append(
                         no_of_scenarios_to_consider
                     )
@@ -1142,9 +1236,9 @@ class SketchRCLSolve:
                                 probabilistically_unconstrained_package,
                                 constraint.get_attribute_name()))
                         no_of_scenarios_to_consider =\
-                            int(np.floor(
+                            max(1, int(np.floor(
                                 constraint.get_percentage_of_scenarios()\
-                                 *no_of_scenarios/100.0))
+                                 *no_of_scenarios/100.0)))
                         min_no_of_scenarios_to_consider.append(
                             no_of_scenarios_to_consider
                         )
@@ -1167,9 +1261,9 @@ class SketchRCLSolve:
                                 probabilistically_unconstrained_package,
                                 constraint.get_attribute_name()))
                         no_of_scenarios_to_consider =\
-                            int(np.floor(
+                            max(1, int(np.floor(
                                 cvarified_constraint.get_percentage_of_scenarios()\
-                                 *no_of_scenarios/100.0))
+                                 *no_of_scenarios/100.0)))
                         min_no_of_scenarios_to_consider.append(
                             no_of_scenarios_to_consider
                         )
@@ -1177,7 +1271,7 @@ class SketchRCLSolve:
                             no_of_scenarios
                         )
                 risk_constraint_index += 1
-        
+
         return cvar_upper_bounds, cvar_lower_bounds,\
             max_no_of_scenarios_to_consider,\
             min_no_of_scenarios_to_consider,\

@@ -43,7 +43,8 @@ class RefineRCLSolve:
         partition_variable_multiplicity,
         chosen_tuple_multiplicity,
         tuple_ids,
-        sketch_objective_value: float
+        sketch_objective_value: float,
+        check_feasibility: bool = False
     ):
         self.__query = query
         self.__gurobi_env = gp.Env(
@@ -54,6 +55,10 @@ class RefineRCLSolve:
         self.__model = gp.Model(
             env=self.__gurobi_env
         )
+        self.__check_feasibility = check_feasibility
+        if check_feasibility:
+            self.__model.Params.SolutionLimit = 1
+            self.__model.Params.MIPFocus = 1
         self.__is_linear_relaxation = \
             linear_relaxation
         self.__chosen_partition_optimization_scenarios =\
@@ -110,6 +115,10 @@ class RefineRCLSolve:
             break
 
         self.__sketch_objective_value = sketch_objective_value
+
+        if self.__query.get_objective().is_cvar_objective():
+            self.__V = None
+            self.__Zs = []
     
     def __get_upper_bound_for_repetition(self) -> int:
         for constraint in self.__query.get_constraints():
@@ -154,7 +163,20 @@ class RefineRCLSolve:
             multiplicity = self.__chosen_tuple_multiplicity[tuple_id]
             self.__vars.append(self.__model.addVar(
                 lb=multiplicity, ub=multiplicity, vtype=type))
-    
+
+        if not self.__check_feasibility and \
+                self.__query.get_objective().is_cvar_objective():
+            self.__V = self.__model.addVar(vtype=GRB.CONTINUOUS)
+            self.__Zs = []
+            for _ in range(self.__no_of_optimization_scenarios):
+                if self.__query.get_objective().get_tail_type() == \
+                        TailType.LOWEST:
+                    self.__Zs.append(
+                        self.__model.addVar(ub=0, vtype=GRB.CONTINUOUS))
+                else:
+                    self.__Zs.append(
+                        self.__model.addVar(lb=0, vtype=GRB.CONTINUOUS))
+
     def __get_gurobi_inequality(
         self, inequality_sign: RelationalOperators):
         if inequality_sign == RelationalOperators.EQUALS:
@@ -229,9 +251,9 @@ class RefineRCLSolve:
         self, cvar_constraint: CVaRConstraint,
         no_of_scenarios: int
     ):
-        return int(np.floor(
+        return max(1, int(np.floor(
             (cvar_constraint.get_percentage_of_scenarios()\
-                *no_of_scenarios)/100))
+                *no_of_scenarios)/100)))
 
     def __preprocess_lcvar_prefix_sums(self) -> None:
         self.__sorted_scenario_prefix_sums = {}
@@ -457,11 +479,65 @@ class RefineRCLSolve:
                         gp.LinExpr(coefficients, self.__vars), gurobi_inequality, sum_limit)
 
                 risk_constraint_index += 1
-    
+
+        if not self.__check_feasibility and \
+                self.__query.get_objective().is_cvar_objective():
+            attr = self.__query.get_objective().get_attribute_name()
+            n_chosen = len(self.__chosen_partition_optimization_scenarios[attr])
+            for s in range(no_of_scenarios):
+                coeffs = []
+                for i in range(n_chosen):
+                    coeffs.append(
+                        self.__chosen_partition_optimization_scenarios[attr][i][s])
+                for partition in self.__partition_optimization_scenarios[attr]:
+                    for i in range(len(
+                            self.__partition_optimization_scenarios[attr][partition])):
+                        coeffs.append(
+                            self.__partition_optimization_scenarios[attr][partition][i][s])
+                for tup in self.__chosen_tuple_optimization_scenarios[attr]:
+                    for i in range(len(
+                            self.__chosen_tuple_optimization_scenarios[attr][tup])):
+                        coeffs.append(
+                            self.__chosen_tuple_optimization_scenarios[attr][tup][i][s])
+                lin_expr = gp.LinExpr(coeffs, self.__vars)
+                if self.__query.get_objective().get_tail_type() == TailType.LOWEST:
+                    self.__model.addConstr(self.__Zs[s] <= lin_expr - self.__V)
+                else:
+                    self.__model.addConstr(self.__Zs[s] >= lin_expr - self.__V)
+
     def __add_objective_to_model(
         self, objective: Objective,
         no_of_scenarios: int
     ):
+        if self.__check_feasibility:
+            self.__model.setObjective(0, GRB.MAXIMIZE)
+            return
+
+        if objective.is_cvar_objective():
+            is_maximize = (objective.get_objective_type() == ObjectiveType.MAXIMIZATION)
+            tail_is_lowest = (objective.get_tail_type() == TailType.LOWEST)
+            if is_maximize != tail_is_lowest:
+                raise NotImplementedError(
+                    'Direct CVaR LP optimization is only supported for '
+                    'MAXIMIZE+LOWEST and MINIMIZE+HIGHEST tail. '
+                    'MINIMIZE+LOWEST and MAXIMIZE+HIGHEST are non-convex '
+                    'and cannot be expressed as a single LP. '
+                    'Use check_feasibility=True instead.'
+                )
+            coefficients = [1]
+            for _ in range(len(self.__Zs)):
+                coefficients.append(
+                    1.0 / (objective.get_percentage_of_scenarios() * no_of_scenarios))
+            if objective.get_objective_type() == ObjectiveType.MINIMIZATION:
+                self.__model.setObjective(
+                    gp.LinExpr(coefficients, [self.__V] + self.__Zs),
+                    GRB.MINIMIZE)
+            else:
+                self.__model.setObjective(
+                    gp.LinExpr(coefficients, [self.__V] + self.__Zs),
+                    GRB.MAXIMIZE)
+            return
+
         attr = objective.get_attribute_name()
         coefficients = []
 
@@ -506,6 +582,9 @@ class RefineRCLSolve:
         trivial_constraints = []
     ):
         self.__model = gp.Model(env=self.__gurobi_env)
+        if self.__check_feasibility:
+            self.__model.Params.SolutionLimit = 1
+            self.__model.Params.MIPFocus = 1
         self.__add_variables_to_model()
         self.__add_constraints_to_model(
             no_of_scenarios,
@@ -682,7 +761,8 @@ class RefineRCLSolve:
                     risk_constraint_index += 1
 
             if all_constraints_satisfied:
-                if self.__validator.is_package_1_pm_epsilon_approximate(
+                if self.__check_feasibility or \
+                        self.__validator.is_package_1_pm_epsilon_approximate(
                     package, epsilon=self.__approximation_bound,
                     upper_bound=self.__sketch_objective_value
                 ):
@@ -808,7 +888,8 @@ class RefineRCLSolve:
                     risk_constraint_index += 1
             
             if all_constraints_satisfied:
-                if self.__validator.is_package_1_pm_epsilon_approximate(
+                if self.__check_feasibility or \
+                        self.__validator.is_package_1_pm_epsilon_approximate(
                     package, epsilon=self.__approximation_bound,
                     upper_bound=self.__sketch_objective_value
                 ):
@@ -911,12 +992,12 @@ class RefineRCLSolve:
                     cvar_upper_bounds.append(constraint.get_sum_limit())
                     if constraint.is_cvar_constraint():
                         no_of_scenarios_to_consider =\
-                            int(np.floor(constraint.get_percentage_of_scenarios()\
-                                     *no_of_scenarios/100.0))
+                            max(1, int(np.floor(constraint.get_percentage_of_scenarios()\
+                                     *no_of_scenarios/100.0)))
                     else:
                         no_of_scenarios_to_consider =\
-                            int(np.floor((1 - constraint.get_probability_threshold())\
-                                     *no_of_scenarios))
+                            max(1, int(np.floor((1 - constraint.get_probability_threshold())\
+                                     *no_of_scenarios)))
                     min_no_of_scenarios_to_consider.append(
                         no_of_scenarios_to_consider
                     )
@@ -939,8 +1020,8 @@ class RefineRCLSolve:
                             )
                         )
                         no_of_scenarios_to_consider = \
-                            int(np.floor(constraint.get_percentage_of_scenarios()\
-                                     *no_of_scenarios/100.0))
+                            max(1, int(np.floor(constraint.get_percentage_of_scenarios()\
+                                     *no_of_scenarios/100.0)))
                         min_no_of_scenarios_to_consider.append(
                             no_of_scenarios_to_consider
                         )
@@ -967,10 +1048,10 @@ class RefineRCLSolve:
                         )
 
                         no_of_scenarios_to_consider =\
-                            int(np.floor(
+                            max(1, int(np.floor(
                                 cvarified_constraint.get_percentage_of_scenarios()\
-                                 *no_of_scenarios/100.0))
-                        
+                                 *no_of_scenarios/100.0)))
+
                         min_no_of_scenarios_to_consider.append(no_of_scenarios_to_consider)
                         max_no_of_scenarios_to_consider.append(no_of_scenarios)
                 

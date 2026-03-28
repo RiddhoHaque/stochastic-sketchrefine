@@ -14,13 +14,15 @@ class SketchRefine:
 
     def __init__(
         self, query: Query, dbInfo: DbInfo,
-        is_lp_relaxation = False
+        is_lp_relaxation = False,
+        check_feasibility: bool = False
     ):
         self.__partition_sizes = []
         self.__max_no_of_duplicates = []
         self.__query = query
         self.__dbInfo = dbInfo
         self.__is_lp_relaxation = is_lp_relaxation
+        self.__check_feasibility = check_feasibility
         self.__metrics = OptimizationMetrics(
             'SketchRefine', is_lp_relaxation)
                 
@@ -57,7 +59,8 @@ class SketchRefine:
                 bisection_threshold=\
                     Hyperparameters.BISECTION_THRESHOLD,
                 max_opt_scenarios=\
-                    Hyperparameters.MAX_OPT_SCENARIOS_IN_PRACTICE
+                    Hyperparameters.MAX_OPT_SCENARIOS_IN_PRACTICE,
+                check_feasibility=self.__check_feasibility
             )
             result = rclsolver.solve()
             m = rclsolver.get_metrics()
@@ -77,7 +80,8 @@ class SketchRefine:
             dbInfo=self.__dbInfo,
             no_of_opt_scenarios=\
                 Hyperparameters.INIT_NO_OF_SCENARIOS,
-            is_lp_relaxation=self.__is_lp_relaxation
+            is_lp_relaxation=self.__is_lp_relaxation,
+            check_feasibility=self.__check_feasibility
         )
         print('Sketch Initialized')
 
@@ -175,7 +179,8 @@ class SketchRefine:
             sketch_package,
             self.__query,
             self.__dbInfo,
-            self.__is_lp_relaxation
+            self.__is_lp_relaxation,
+            self.__check_feasibility
         )
         result = refine.solve()
         self.__metrics.add_optimizer_metrics(

@@ -302,13 +302,32 @@ class SketchValidator:
             else:
                 #print('Null package, returning obj. value inf')
                 return math.inf
-        
+
         if len(package_dict) == 0:
             #print('Empty package, returning obj. value 0')
             return 0
-            
+
         attribute = \
             self.__query.get_objective().get_attribute_name()
+
+        if self.__query.get_objective().is_cvar_objective():
+            scenarios, ids_with_multiplicities = \
+                self.__get_scenarios_and_ids(
+                    package_dict, attribute, True)
+            mat = np.array(scenarios)
+            mults = np.array([m for _, m in ids_with_multiplicities])
+            scenario_scores = mat.T @ mults
+            tail_type = self.__query.get_objective().get_tail_type()
+            if tail_type == TailType.HIGHEST:
+                scenario_scores = np.sort(scenario_scores)[::-1]
+            else:
+                scenario_scores = np.sort(scenario_scores)
+            k = max(1, int(np.floor(
+                self.__no_of_validation_scenarios *
+                self.__query.get_objective().get_percentage_of_scenarios()
+            )))
+            return float(np.average(scenario_scores[:k]))
+
         scenarios, ids_with_multiplicities = \
             self.__get_scenarios_and_ids(
                 package_dict, attribute, False)
@@ -438,16 +457,16 @@ class SketchValidator:
             scenario_scores = np.sort(scenario_scores)
 
         no_of_scenarios_to_consider = \
-            int(
+            max(1, int(
                 np.floor(
                     self.__no_of_validation_scenarios*\
                     cvar_constraint.get_percentage_of_scenarios()\
                         /100
                 )
-            )
+            ))
 
         return float(np.average(scenario_scores[
-            0: no_of_scenarios_to_consider]))    
+            0: no_of_scenarios_to_consider]))
 
 
     def get_var_constraint_feasibility(
