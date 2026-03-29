@@ -2,8 +2,17 @@ import re
 
 import pandas as pd
 import pandas_market_calendars as mcal
+import psycopg2.extras
+import yfinance as yf
 
 from PgConnection.PgConnection import PgConnection
+
+_INDEX_TICKERS = {
+    '^DJI':  'dow_pct',
+    '^GSPC': 'sp500_pct',
+    '^IXIC': 'nasdaq_pct',
+    '^RUT':  'russell2000_pct',
+}
 
 
 # ---------------------------------------------------------------------------
@@ -66,6 +75,13 @@ class BackTest:
                 date    date             NOT NULL,
                 close   double precision NOT NULL,
                 PRIMARY KEY (ticker, date)
+            )
+        """)
+        PgConnection.Execute("""
+            CREATE TABLE IF NOT EXISTS ActualCloseDownloaded (
+                ticker      varchar(10) NOT NULL,
+                period_year int         NOT NULL,
+                PRIMARY KEY (ticker, period_year)
             )
         """)
         PgConnection.Commit()
@@ -209,6 +225,125 @@ class BackTest:
             )
 
         return total_gain
+
+    def __ensure_index_data(self, sell_date: pd.Timestamp):
+        """Download ^DJI and ^GSPC for this year window into ActualClose if not cached."""
+        buy_date  = pd.Timestamp(year=self.__year, month=7, day=1)
+        start_str = buy_date.strftime('%Y-%m-%d')
+        end_str   = (sell_date + pd.Timedelta(days=7)).strftime('%Y-%m-%d')
+
+        for ticker in _INDEX_TICKERS:
+            safe_ticker = ticker.replace("'", "''")
+            PgConnection.Execute(
+                f"SELECT 1 FROM ActualCloseDownloaded "
+                f"WHERE ticker = '{safe_ticker}' AND period_year = {self.__year}"
+            )
+            if PgConnection.Fetch():
+                continue   # already cached
+
+            try:
+                raw = yf.download(
+                    ticker, start=start_str, end=end_str,
+                    progress=False, auto_adjust=True, actions=False,
+                )
+            except Exception as exc:
+                print(f'[BackTest] yfinance error for {ticker}: {exc}')
+                continue
+
+            if not raw.empty:
+                close_col = raw['Close']
+                if isinstance(close_col, pd.DataFrame):
+                    close_col = close_col.iloc[:, 0]
+
+                idx = close_col.index.normalize()
+                if idx.tz is not None:
+                    idx = idx.tz_convert(None)
+                close_col.index = idx
+                close_col = close_col.dropna()
+
+                price_rows = []
+                for ts, price in close_col.items():
+                    if pd.isna(price) or float(price) <= 0:
+                        continue
+                    d = ts.date() if hasattr(ts, 'date') else ts
+                    price_rows.append((ticker, d, float(price)))
+
+                if price_rows:
+                    psycopg2.extras.execute_values(
+                        PgConnection.CURSOR,
+                        "INSERT INTO ActualClose (ticker, date, close) VALUES %s "
+                        "ON CONFLICT (ticker, date) DO NOTHING",
+                        price_rows, page_size=2000,
+                    )
+
+            PgConnection.Execute(
+                f"INSERT INTO ActualCloseDownloaded (ticker, period_year) "
+                f"VALUES ('{safe_ticker}', {self.__year}) ON CONFLICT DO NOTHING"
+            )
+            PgConnection.Commit()
+
+    def get_benchmark_comparison(self, package_dict: dict) -> dict:
+        """
+        Return percentage gains for ^DJI (DOW) and ^GSPC (S&P 500) over the
+        same window as the package: buy on July 1 of the relation year, sell
+        on the calendar date that corresponds to the maximum sell_after value
+        across all tuples in the package.
+
+        Returns
+        -------
+        dict with keys 'dow_pct', 'sp500_pct', 'nasdaq_pct', 'russell2000_pct'
+        (float percentage gains, or None if price data is unavailable).
+        """
+        result = {key: None for key in _INDEX_TICKERS.values()}
+        result['total_investment'] = 0.0
+        if not package_dict:
+            return result
+
+        tuple_info = self.__fetch_tuple_info(list(package_dict.keys()))
+        if not tuple_info:
+            return result
+
+        # Total investment = SUM(price * multiplicity)
+        total_investment = sum(
+            tuple_info[tid][2] * package_dict[tid]
+            for tid in package_dict
+            if tid in tuple_info
+        )
+        result['total_investment'] = total_investment
+
+        max_sell_after = max(info[1] for info in tuple_info.values())
+        if max_sell_after not in self.__sa_to_date:
+            return result
+
+        sell_date = self.__sa_to_date[max_sell_after]
+        buy_date  = pd.Timestamp(year=self.__year, month=7, day=1)
+
+        self.__ensure_index_data(sell_date)
+
+        closes = self.__fetch_closes(list(_INDEX_TICKERS.keys()))
+
+        for ticker, key in _INDEX_TICKERS.items():
+            if ticker not in closes or closes[ticker].empty:
+                continue
+            series = closes[ticker]
+
+            # buy: first trading day on or after July 1
+            buy_pos = series.index.searchsorted(buy_date, side='left')
+            if buy_pos >= len(series):
+                continue
+            buy_price = float(series.iloc[buy_pos])
+            if buy_price <= 0:
+                continue
+
+            # sell: last trading day on or before sell_date
+            sell_pos = series.index.searchsorted(sell_date, side='right') - 1
+            if sell_pos < 0:
+                continue
+            sell_price = float(series.iloc[sell_pos])
+
+            result[key] = (sell_price - buy_price) / buy_price * 100.0
+
+        return result
 
     def get_year(self) -> int:
         """Return the calendar year extracted from the relation name."""

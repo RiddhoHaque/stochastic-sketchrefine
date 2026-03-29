@@ -1,4 +1,5 @@
 import binpacking
+import gurobipy as gp
 
 from CVaRification.RCLSolve import RCLSolve
 from DbInfo.DbInfo import DbInfo
@@ -8,6 +9,7 @@ from PgConnection.PgConnection import PgConnection
 from StochasticPackageQuery.Query import Query
 from SketchRefine.Sketch import Sketch
 from SketchRefine.Refine import Refine
+from Utils.GurobiLicense import GurobiLicense
 
 
 class SketchRefine:
@@ -15,7 +17,10 @@ class SketchRefine:
     def __init__(
         self, query: Query, dbInfo: DbInfo,
         is_lp_relaxation = False,
-        check_feasibility: bool = False
+        check_feasibility: bool = False,
+        optimize_lcvar: bool = False,
+        prepare_for_alternative_packages: bool = False,
+        gurobi_env = None
     ):
         self.__partition_sizes = []
         self.__max_no_of_duplicates = []
@@ -23,6 +28,13 @@ class SketchRefine:
         self.__dbInfo = dbInfo
         self.__is_lp_relaxation = is_lp_relaxation
         self.__check_feasibility = check_feasibility
+        self.__optimize_lcvar = optimize_lcvar
+        self.__prepare_for_alternative_packages = prepare_for_alternative_packages
+        if gurobi_env is None:
+            self.__gurobi_env = gp.Env(params=GurobiLicense.OPTIONS)
+            self.__gurobi_env.setParam('OutputFlag', 0)
+        else:
+            self.__gurobi_env = gurobi_env
         self.__metrics = OptimizationMetrics(
             'SketchRefine', is_lp_relaxation)
                 
@@ -60,7 +72,9 @@ class SketchRefine:
                     Hyperparameters.BISECTION_THRESHOLD,
                 max_opt_scenarios=\
                     Hyperparameters.MAX_OPT_SCENARIOS_IN_PRACTICE,
-                check_feasibility=self.__check_feasibility
+                check_feasibility=self.__check_feasibility,
+                optimize_lcvar=self.__optimize_lcvar,
+                gurobi_env=self.__gurobi_env
             )
             result = rclsolver.solve()
             m = rclsolver.get_metrics()
@@ -81,7 +95,9 @@ class SketchRefine:
             no_of_opt_scenarios=\
                 Hyperparameters.INIT_NO_OF_SCENARIOS,
             is_lp_relaxation=self.__is_lp_relaxation,
-            check_feasibility=self.__check_feasibility
+            check_feasibility=self.__check_feasibility,
+            optimize_lcvar=self.__optimize_lcvar,
+            gurobi_env=self.__gurobi_env
         )
         print('Sketch Initialized')
 
@@ -180,7 +196,9 @@ class SketchRefine:
             self.__query,
             self.__dbInfo,
             self.__is_lp_relaxation,
-            self.__check_feasibility
+            self.__check_feasibility,
+            self.__optimize_lcvar,
+            self.__gurobi_env
         )
         result = refine.solve()
         self.__metrics.add_optimizer_metrics(

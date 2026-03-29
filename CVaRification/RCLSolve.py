@@ -1,3 +1,4 @@
+import copy
 import gurobipy as gp
 from gurobipy import GRB
 import numpy as np
@@ -37,8 +38,13 @@ class RCLSolve:
                  bisection_threshold: float,
                  max_opt_scenarios: int,
                  gurobi_env = None,
-                 check_feasibility = False):
-        self.__query = query
+                 check_feasibility = False,
+                 optimize_lcvar: bool = False):
+        self.__query = copy.deepcopy(query)
+        constraints = self.__query.get_constraints()
+        for i in range(len(constraints)):
+            if constraints[i].is_expected_sum_constraint():
+                constraints[i] = self.__to_cvar_constraint(constraints[i])
         if gurobi_env is None:
             self.__gurobi_env = gp.Env(
                 params=GurobiLicense.OPTIONS)
@@ -53,6 +59,7 @@ class RCLSolve:
             self.__model.Params.SolutionLimit = 1
             self.__model.Params.MIPFocus = 1
         self.__check_feasibility = check_feasibility
+        self.__optimize_lcvar = optimize_lcvar
         self.__is_linear_relaxation = \
             linear_relaxation
         self.__init_no_of_scenarios = \
@@ -131,7 +138,22 @@ class RCLSolve:
     
     def get_validator(self):
         return self.__validator
-    
+
+    def __to_cvar_constraint(self, esc: ExpectedSumConstraint) -> CVaRConstraint:
+        """Convert an ExpectedSumConstraint to an equivalent CVaRConstraint at 100% tail."""
+        cvar = CVaRConstraint()
+        cvar.set_attribute_name(esc.get_attribute_name())
+        ineq = esc.get_inequality_sign()
+        cvar.set_inequality_sign(
+            '>' if ineq == RelationalOperators.GREATER_THAN_OR_EQUAL_TO else '<'
+        )
+        cvar.set_sum_limit(esc.get_sum_limit())
+        cvar.set_percentage_of_scenarios(100.0)
+        cvar.set_tail_type(
+            'l' if ineq == RelationalOperators.GREATER_THAN_OR_EQUAL_TO else 'h'
+        )
+        return cvar
+
     def __get_stochastic_attributes(self):
         attributes = set()
         for constraint in self.__query.get_constraints():
@@ -218,7 +240,8 @@ class RCLSolve:
                     )
                 )
 
-        if not self.__check_feasibility and self.__query.get_objective().is_cvar_objective():
+        if not self.__check_feasibility and not self.__optimize_lcvar and \
+                self.__query.get_objective().is_cvar_objective():
             self.__V = self.__model.addVar(
                 vtype=GRB.CONTINUOUS
             )
@@ -409,6 +432,23 @@ class RCLSolve:
                 k = np.arange(1, len(sorted_arr) + 1, dtype=np.float64)
                 prefix_avgs.append(np.cumsum(sorted_arr) / k)
             self.__sorted_scenario_prefix_sums[key] = prefix_avgs
+        if self.__optimize_lcvar and self.__query.get_objective().is_cvar_objective():
+            obj = self.__query.get_objective()
+            key = (obj.get_attribute_name(), obj.get_tail_type())
+            if key not in self.__sorted_scenario_prefix_sums:
+                attr = obj.get_attribute_name()
+                tail_type = obj.get_tail_type()
+                prefix_avgs = []
+                for var_idx in range(self.__no_of_vars):
+                    arr = np.array(
+                        self.__scenarios[attr][var_idx], dtype=np.float64)
+                    if tail_type == TailType.LOWEST:
+                        sorted_arr = np.sort(arr)
+                    else:
+                        sorted_arr = np.sort(arr)[::-1]
+                    k = np.arange(1, len(sorted_arr) + 1, dtype=np.float64)
+                    prefix_avgs.append(np.cumsum(sorted_arr) / k)
+                self.__sorted_scenario_prefix_sums[key] = prefix_avgs
 
 
     def __get_cvar_constraint_coefficients(
@@ -422,8 +462,9 @@ class RCLSolve:
         if key in self.__sorted_scenario_prefix_sums:
             k = no_of_scenarios_to_consider
             prefix_avgs = self.__sorted_scenario_prefix_sums[key]
-            return [prefix_avgs[var][k - 1]
-                    for var in range(self.__no_of_vars)]
+            if k <= len(prefix_avgs[0]):
+                return [prefix_avgs[var][k - 1]
+                        for var in range(self.__no_of_vars)]
 
         tuple_wise_heaps = []
         is_max_heap = True
@@ -524,6 +565,11 @@ class RCLSolve:
         self.__add_all_scenarios_if_possible(
             no_of_scenarios
         )
+        any_high_tail_cvar = any(
+            c.get_percentage_of_scenarios() > 50.0
+            for c in self.__query.get_constraints()
+            if c.is_cvar_constraint()
+        )
         risk_constraint_index = 0
         for constraint in self.__query.get_constraints():
             if constraint.is_package_size_constraint():
@@ -533,10 +579,6 @@ class RCLSolve:
             if constraint.is_deterministic_constraint():
                 self.__add_deterministic_constraint_to_model(
                     constraint
-                )
-            if constraint.is_expected_sum_constraint():
-                self.__add_expected_sum_constraint_to_model(
-                    constraint, no_of_scenarios
                 )
             if constraint.is_risk_constraint():
                 if probabilistically_constrained:
@@ -563,25 +605,27 @@ class RCLSolve:
                                 ]
                         )
                 else:
-                    attribute = constraint.get_attribute_name()
-                    sum_limit = constraint.get_sum_limit()
-                    self.__add_feasible_no_of_scenarios(attribute)
-                    coefficients = []
-                    for tuple_scenarios in self.__scenarios[attribute]:
-                        coefficients.append(np.median(tuple_scenarios))
-                        
-                    gurobi_inequality = GRB.LESS_EQUAL
-                    if constraint.get_inequality_sign() == \
-                        RelationalOperators.GREATER_THAN_OR_EQUAL_TO:
-                        gurobi_inequality = GRB.GREATER_EQUAL
-                    self.__model.addConstr(
-                        gp.LinExpr(coefficients, self.__vars),
-                        gurobi_inequality, sum_limit
-                    )
+                    if not any_high_tail_cvar:
+                        attribute = constraint.get_attribute_name()
+                        sum_limit = constraint.get_sum_limit()
+                        self.__add_feasible_no_of_scenarios(attribute)
+                        coefficients = []
+                        for tuple_scenarios in self.__scenarios[attribute]:
+                            coefficients.append(np.median(tuple_scenarios))
 
-                risk_constraint_index += 1    
-        
-        if not self.__check_feasibility and self.__query.get_objective().is_cvar_objective():
+                        gurobi_inequality = GRB.LESS_EQUAL
+                        if constraint.get_inequality_sign() == \
+                                RelationalOperators.GREATER_THAN_OR_EQUAL_TO:
+                            gurobi_inequality = GRB.GREATER_EQUAL
+                        self.__model.addConstr(
+                            gp.LinExpr(coefficients, self.__vars),
+                            gurobi_inequality, sum_limit
+                        )
+
+                risk_constraint_index += 1
+
+        if not self.__check_feasibility and not self.__optimize_lcvar and \
+                self.__query.get_objective().is_cvar_objective():
             attribute = self.__query.get_objective().get_attribute_name()
             for idx in range(no_of_scenarios):
                 scenario_coefficients = [self.__scenarios[attribute][i][idx] for i in range(self.__no_of_vars)]
@@ -598,10 +642,44 @@ class RCLSolve:
         self, objective: Objective,
         no_of_scenarios: int):
         if self.__check_feasibility:
-            self.__model.setObjective(0, GRB.MAXIMIZE)
+            if objective.is_cvar_objective():
+                attr = objective.get_attribute_name()
+                coefficients = [
+                    np.average(self.__scenarios[attr][idx])
+                    for idx in range(self.__no_of_vars)
+                ]
+                gurobi_dir = (
+                    GRB.MAXIMIZE
+                    if objective.get_objective_type() == ObjectiveType.MAXIMIZATION
+                    else GRB.MINIMIZE
+                )
+                self.__model.setObjective(
+                    gp.LinExpr(coefficients, self.__vars), gurobi_dir)
+            else:
+                raise NotImplementedError(
+                    'check_feasibility=True is only supported for CVaR objectives.'
+                )
             return
-        
+
         if objective.is_cvar_objective():
+            if self.__optimize_lcvar:
+                synthetic = CVaRConstraint()
+                synthetic.set_attribute_name(objective.get_attribute_name())
+                synthetic.set_tail_type(
+                    'l' if objective.get_tail_type() == TailType.LOWEST else 'h')
+                synthetic.set_percentage_of_scenarios(
+                    objective.get_percentage_of_scenarios() * 100)
+                n_tail = max(1, int(np.floor(
+                    objective.get_percentage_of_scenarios() * no_of_scenarios)))
+                coefficients = self.__get_cvar_constraint_coefficients(
+                    synthetic, n_tail, no_of_scenarios)
+                gurobi_dir = (GRB.MAXIMIZE
+                              if objective.get_objective_type() == ObjectiveType.MAXIMIZATION
+                              else GRB.MINIMIZE)
+                self.__model.setObjective(
+                    gp.LinExpr(coefficients, self.__vars), gurobi_dir)
+                return
+
             is_maximize = (objective.get_objective_type() == ObjectiveType.MAXIMIZATION)
             tail_is_lowest = (objective.get_tail_type() == TailType.LOWEST)
             if is_maximize != tail_is_lowest:
@@ -1057,6 +1135,21 @@ class RCLSolve:
         cvar_lower_bounds = list(cvar_lower_bounds)
         best_feasible_package = None
         best_feasible_objective = None
+        if not is_model_setup and \
+                self.__l_inf(cvar_upper_bounds, cvar_lower_bounds) < \
+                self.__bisection_threshold:
+            cvar_initial_thresholds = [
+                (u + l) / 2.0
+                for u, l in zip(cvar_upper_bounds, cvar_lower_bounds)
+            ]
+            self.__model_setup(
+                no_of_scenarios=no_of_scenarios,
+                no_of_scenarios_to_consider=no_of_scenarios_to_consider,
+                probabilistically_constrained=True,
+                cvar_lower_bounds=cvar_initial_thresholds,
+                trivial_constraints=trivial_constraints
+            )
+            is_model_setup = True
         while self.__l_inf(
             cvar_upper_bounds, cvar_lower_bounds) >= \
             self.__bisection_threshold:
@@ -1571,13 +1664,23 @@ class RCLSolve:
                                 probabilistically_unconstrained_package,
                                 constraint, no_of_scenarios
                             )
-                        cvar_upper_bounds.append(cvar_threshold)
-                        cvar_lower_bounds.append(
+                        if constraint.get_inequality_sign() == \
+                                RelationalOperators.GREATER_THAN_OR_EQUAL_TO:
+                            cvar_upper_bounds.append(
+                                max(cvar_threshold, constraint.get_sum_limit()))
+                        else:
+                            cvar_upper_bounds.append(cvar_threshold)
+                        expected_sum = \
                             self.__get_expected_sum_among_optimization_scenarios(
                                 probabilistically_unconstrained_package,
                                 constraint.get_attribute_name()
                             )
-                        )
+                        if constraint.get_inequality_sign() == \
+                                RelationalOperators.LESS_THAN_OR_EQUAL_TO:
+                            cvar_lower_bounds.append(
+                                min(expected_sum, constraint.get_sum_limit()))
+                        else:
+                            cvar_lower_bounds.append(expected_sum)
                         no_of_scenarios_to_consider =\
                             max(1, int(np.floor(
                                 constraint.get_percentage_of_scenarios()\
@@ -1696,11 +1799,13 @@ class RCLSolve:
                   max_no_of_scenarios_to_consider)
             print('Trivial constraints:', trivial_constraints)
 
-            init_diff = self.__l_inf(
-                cvar_upper_bounds, cvar_lower_bounds)
+            init_diff = max(
+                self.__l_inf(cvar_upper_bounds, cvar_lower_bounds),
+                1e-9
+            )
 
             while self.__l_inf(cvar_upper_bounds, cvar_lower_bounds)\
-                >= self.__bisection_threshold*init_diff and\
+                >= self.__bisection_threshold*init_diff or\
                     self.__l_inf(min_no_of_scenarios_to_consider,
                                  max_no_of_scenarios_to_consider) >= 1:
                 

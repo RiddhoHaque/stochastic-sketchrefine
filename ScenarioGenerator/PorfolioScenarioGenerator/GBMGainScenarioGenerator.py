@@ -4,6 +4,7 @@ from numpy.random import SFC64, SeedSequence, Generator
 from concurrent.futures import ThreadPoolExecutor
 from PgConnection.PgConnection import PgConnection
 from ScenarioGenerator.ScenarioGenerator import ScenarioGenerator
+from Utils.Relation_Prefixes import Relation_Prefixes
 
 SUBSTEPS = 10
 DRIFT_DAMPEN = 0.2
@@ -117,3 +118,18 @@ class GBMGainScenarioGenerator(ScenarioGenerator):
                     print(f'[GBMGainScenarioGenerator] Warning: ticker skipped — {exc}')
 
         return gains
+
+    def generate_scenarios_from_partition(
+        self, seed: int, no_of_scenarios: int,
+        partition_id: int
+    ) -> list[list[float]]:
+        self.__relation = self.__relation + \
+            ' AS r INNER JOIN ' + \
+            Relation_Prefixes.PARTITION_RELATION_PREFIX + \
+            self.__relation + ' AS p ON r.id=p.tuple_id'
+
+        if len(self.__base_predicate) > 0:
+            self.__base_predicate += ' AND '
+        self.__base_predicate += 'p.partition_id = ' + str(partition_id)
+
+        return self.generate_scenarios(seed, no_of_scenarios)

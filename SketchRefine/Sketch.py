@@ -20,7 +20,9 @@ class Sketch:
         self, query: Query, dbInfo: DbInfo,
         no_of_opt_scenarios: int,
         is_lp_relaxation = False,
-        check_feasibility: bool = False
+        check_feasibility: bool = False,
+        optimize_lcvar: bool = False,
+        gurobi_env = None
     ):
         self.__query = query
         self.__dbInfo = dbInfo
@@ -93,7 +95,8 @@ class Sketch:
                 ).get_values()
 
         self.__is_lp_relaxation = is_lp_relaxation
-        
+        self.__gurobi_env = gurobi_env
+
         print('Initializing sketch validator')
         self.__validator = SketchValidator(
             query=self.__query,
@@ -123,7 +126,9 @@ class Sketch:
             partition_sizes=self.__partition_sizes,
             duplicate_vector=self.__duplicate_vector,
             partition_id_for_each_index=self.__partition_id_in_duplicate_vector,
-            check_feasibility=check_feasibility
+            check_feasibility=check_feasibility,
+            optimize_lcvar=optimize_lcvar,
+            gurobi_env=self.__gurobi_env
         )
         print('Sketch Initialized')
 

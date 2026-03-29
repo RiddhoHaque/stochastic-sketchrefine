@@ -25,7 +25,9 @@ class Refine:
         sketch_package: dict[int, int],
         query: Query, dbInfo: DbInfo,
         linear_relaxation: bool,
-        check_feasibility: bool = False
+        check_feasibility: bool = False,
+        optimize_lcvar: bool = False,
+        gurobi_env = None
     ):
 
         self.__partition_groups = partition_groups
@@ -145,14 +147,19 @@ class Refine:
                 num_duplicates = int(self.__sketch_package[partition])
                 if len(self.__tuples_in_partition[partition]) < num_duplicates:
                     num_duplicates = len(self.__tuples_in_partition[partition])
-                self.__partition_variable_multiplicity[partition] = [
-                    int(self.__sketch_package[partition]) // num_duplicates\
+                if num_duplicates == 0:
+                    self.__partition_variable_multiplicity[partition] = []
+                else:
+                    self.__partition_variable_multiplicity[partition] = [
+                        int(self.__sketch_package[partition]) // num_duplicates
                         for _ in range(num_duplicates)
-                ]
-                for _ in range(int(self.__sketch_package[partition]) % num_duplicates):
-                    self.__partition_variable_multiplicity[partition][_] += 1
+                    ]
+                    for _ in range(int(self.__sketch_package[partition]) % num_duplicates):
+                        self.__partition_variable_multiplicity[partition][_] += 1
         self.__is_linear_relaxation = linear_relaxation
         self.__check_feasibility = check_feasibility
+        self.__optimize_lcvar = optimize_lcvar
+        self.__gurobi_env = gurobi_env
 
     def get_tuples_in_each_partition(self):
         partition_predicate = ''
@@ -189,6 +196,14 @@ class Refine:
             if pid not in self.__tuples_in_partition:
                 self.__tuples_in_partition[pid] = []
             self.__tuples_in_partition[pid].append(tid)
+
+        # Guarantee every partition referenced by the sketch has an entry.
+        # A partition can be absent from the query results when the partition
+        # table has no rows for that ID (e.g. data not yet loaded for a year).
+        for partition_group in self.__partition_groups:
+            for partition_id in partition_group:
+                if partition_id not in self.__tuples_in_partition:
+                    self.__tuples_in_partition[partition_id] = []
 
 
     def get_representative_of_each_partition(self):
@@ -495,7 +510,9 @@ class Refine:
             tuple_ids=tuple_ids,
             sketch_objective_value=\
                 self.__sketch_objective_value,
-            check_feasibility=self.__check_feasibility
+            check_feasibility=self.__check_feasibility,
+            optimize_lcvar=self.__optimize_lcvar,
+            gurobi_env=self.__gurobi_env
         )
 
         refined_package, objective_value,\

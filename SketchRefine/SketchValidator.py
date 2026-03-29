@@ -33,7 +33,7 @@ class SketchValidator:
         self.__no_of_validation_scenarios = \
             no_of_validation_scenarios
         self.__maxed_out_duplicate_vector = \
-            maxed_out_duplicate_vector
+            list(maxed_out_duplicate_vector)
         self.__partition_id_in_duplicate_vector = \
             partition_id_in_duplicate_vector
         self.__scenario_cache = {}
@@ -91,8 +91,20 @@ class SketchValidator:
                     self.__correlations[attribute][idx].append(init_corr)
 
                 for idx in range(len(self.__correlations[attribute])):
-                    assert len(self.__correlations[attribute][idx]) == self.__maxed_out_duplicate_vector[idx]
+                    actual = len(self.__correlations[attribute][idx])
+                    if actual < self.__maxed_out_duplicate_vector[idx]:
+                        self.__maxed_out_duplicate_vector[idx] = actual
+                    elif actual > self.__maxed_out_duplicate_vector[idx]:
+                        self.__correlations[attribute][idx] = \
+                            self.__correlations[attribute][idx][:self.__maxed_out_duplicate_vector[idx]]
                 print('Got initial correlations')
+
+            # Recompute prefix sums in case clamping changed any entry.
+            self.__prefix_sum_max_duplicates = [0]
+            for max_duplicates in self.__maxed_out_duplicate_vector:
+                self.__prefix_sum_max_duplicates.append(
+                    self.__prefix_sum_max_duplicates[-1] + max_duplicates
+                )
 
         attributes = self.__dbInfo.get_stochastic_attributes()
         self.__representatives = dict()
