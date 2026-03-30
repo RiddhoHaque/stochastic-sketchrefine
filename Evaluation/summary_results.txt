@@ -1,6 +1,12 @@
 Relation                        Solver                           Obj Value    Runtime(s)   Pkg Size     Actual Gain      DOW Profit   S&P500 Profit   NASDAQ Profit  Russell2000 Profit
 ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-GBM_Portfolio_2022              SketchRefine/Q1                    78.3171        73.950        102        333.8520         30.7078         49.4428        145.8262         48.0644
-GBM_Portfolio_2023              SketchRefine/Q1                    71.9611        66.231         82       -179.0981         24.2430         75.4105        154.9483        143.6369
-GBM_Portfolio_2024              SketchRefine/Q1                    66.2009        73.840        140        179.9417        133.0297        142.5747        165.9005        386.5421
-GBM_Portfolio_2025              SketchRefine/Q1                   232.2179        78.403        110        260.6949        -52.9998         36.9064        117.5333         17.0870
+GBM_Portfolio_2021              SketchRefine/Q1                    25.5940        62.865         15        -26.5563         15.8973         14.4544          2.2255        -92.9912
+GBM_Portfolio_2022              SketchRefine/Q1                    77.6250        30.673         96        314.0300         30.7076         49.4424        145.8250         48.0640
+GBM_Portfolio_2023              SketchRefine/Q1                    18.7537        63.483         19         16.2973          6.5069         20.2404         41.5886         38.5526
+GBM_Portfolio_2024              SketchRefine/Q1                    65.8317        37.659        133        187.7146        133.0341        142.5793        165.9059        386.5546
+GBM_Portfolio_2025              SketchRefine/Q1                   160.9312        81.117         19        -34.2692        -16.7681         11.6765         37.1853          5.4060
+GARCH_Portfolio_2021            SketchRefine/Q1                     A lot        105.521         13        152.0840         34.5439         31.4087          4.8359       -202.0644
+GARCH_Portfolio_2022            SketchRefine/Q1                     A lot        142.114         21         29.6427          4.2568          6.8539         20.2148          6.6628
+GARCH_Portfolio_2023            SketchRefine/Q1                     A lot         89.766         75        190.4250         24.2417         75.4064        154.9400        143.6292
+GARCH_Portfolio_2024            SketchRefine/Q1                     A lot        135.868          6          1.2000         11.1246         11.9227         13.8734         32.3244
+GARCH_Portfolio_2025            SketchRefine/Q1                     A lot        148.244         21         38.8889         -8.0848          5.6299         17.9291          2.6065

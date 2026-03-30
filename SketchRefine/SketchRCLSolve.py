@@ -44,13 +44,10 @@ class SketchRCLSolve:
         partition_id_for_each_index: list[int],
         check_feasibility: bool = False,
         optimize_lcvar: bool = False,
-        gurobi_env = None
+        gurobi_env = None,
+        early_termination: bool = False
     ):
         self.__query = copy.deepcopy(query)
-        constraints = self.__query.get_constraints()
-        for i in range(len(constraints)):
-            if constraints[i].is_expected_sum_constraint():
-                constraints[i] = self.__to_cvar_constraint(constraints[i])
         if gurobi_env is None:
             self.__gurobi_env = gp.Env(params=GurobiLicense.OPTIONS)
         else:
@@ -62,6 +59,7 @@ class SketchRCLSolve:
             env=self.__gurobi_env)
         self.__check_feasibility = check_feasibility
         self.__optimize_lcvar = optimize_lcvar
+        self.__early_termination = early_termination
         if check_feasibility:
             self.__model.Params.SolutionLimit = 1
             self.__model.Params.MIPFocus = 1
@@ -107,6 +105,10 @@ class SketchRCLSolve:
         if self.__query.get_objective().is_cvar_objective():
             self.__V = None
             self.__Zs = []
+            # Lazy Z_s constraint state
+            self.__z_groups = []
+            self.__z_group_constrs = []
+            self.__z_lazy_active = False
 
         print('Sketch Solver Initialized')
 
@@ -150,6 +152,16 @@ class SketchRCLSolve:
             'l' if ineq == RelationalOperators.GREATER_THAN_OR_EQUAL_TO else 'h'
         )
         return cvar
+
+    def __is_searchable_stochastic_constraint(self, constraint) -> bool:
+        return constraint.is_expected_sum_constraint() or \
+            constraint.is_risk_constraint()
+
+    def __get_searchable_constraints(self):
+        return [
+            constraint for constraint in self.__query.get_constraints()
+            if self.__is_searchable_stochastic_constraint(constraint)
+        ]
 
     def __get_upper_bound_for_repetitions(self) -> int:
         for constraint in self.__query.get_constraints():
@@ -250,6 +262,7 @@ class SketchRCLSolve:
 
     def __add_expected_sum_constraint_to_model(
         self, expected_sum_constraint: ExpectedSumConstraint,
+        threshold_override: float | None = None
     ):
         attr = expected_sum_constraint.get_attribute_name()
         coefficients = []
@@ -263,10 +276,12 @@ class SketchRCLSolve:
             expected_sum_constraint.get_inequality_sign()
         )
 
-        expected_sum_limit = \
-            expected_sum_constraint.get_sum_limit()
+        expected_sum_limit = threshold_override
+        if expected_sum_limit is None:
+            expected_sum_limit = \
+                expected_sum_constraint.get_sum_limit()
 
-        self.__model.addConstr(
+        return self.__model.addConstr(
             gp.LinExpr(coefficients, self.__vars),
             gurobi_inequality, expected_sum_limit
         )
@@ -423,6 +438,72 @@ class SketchRCLSolve:
 
         return cvarified_constraint
 
+    def __build_aggregate_z_lin_expr(self, group: frozenset, attribute: str):
+        """Build LHS and RHS for aggregate Z_s constraint over a group of scenarios."""
+        group_list = sorted(group)
+        G = len(group_list)
+        lhs = gp.LinExpr([1.0] * G, [self.__Zs[s] for s in group_list])
+        agg_coeffs = [
+            sum(self.__scenarios[attribute][i][s] for s in group_list)
+            for i in range(self.__no_of_vars)
+        ]
+        rhs = gp.LinExpr(agg_coeffs, self.__vars)
+        rhs.addTerms(-float(G), self.__V)
+        return lhs, rhs
+
+    def __init_z_lazy_constraints(self, no_of_scenarios: int, attribute: str):
+        """Initialize lazy Z_s constraints with single aggregate over all scenarios."""
+        self.__z_groups = []
+        self.__z_group_constrs = []
+        all_s = frozenset(range(no_of_scenarios))
+        self.__z_groups.append(all_s)
+        lhs, rhs = self.__build_aggregate_z_lin_expr(all_s, attribute)
+        tail = self.__query.get_objective().get_tail_type()
+        constr = self.__model.addConstr(lhs <= rhs if tail == TailType.LOWEST else lhs >= rhs)
+        self.__z_group_constrs.append(constr)
+        self.__z_lazy_active = True
+
+    def __check_z_violations(self, attribute: str, tol: float = 1e-6) -> list[int]:
+        """Vectorized check for violated individual Z_s constraints."""
+        V_val = self.__V.x
+        x_arr = np.array([v.x for v in self.__vars])
+        mat = np.array([self.__scenarios[attribute][i]
+                        for i in range(self.__no_of_vars)])
+        lin_vals = mat.T @ x_arr
+        rhs_vals = lin_vals - V_val
+        z_vals = np.array([z.x for z in self.__Zs])
+        tail = self.__query.get_objective().get_tail_type()
+        if tail == TailType.LOWEST:
+            mask = z_vals > rhs_vals + tol
+        else:
+            mask = z_vals < rhs_vals - tol
+        return list(np.where(mask)[0])
+
+    def __refine_z_constraints(self, attribute: str, tol: float = 1e-6) -> bool:
+        """Perform one round of constraint splitting. Returns True if splits occurred."""
+        violated_set = set(self.__check_z_violations(attribute, tol))
+        if not violated_set:
+            return False
+        tail = self.__query.get_objective().get_tail_type()
+        new_groups, new_constrs = [], []
+        for group, constr in zip(self.__z_groups, self.__z_group_constrs):
+            viol = group & violated_set
+            sat  = group - violated_set
+            if not viol:
+                new_groups.append(group)
+                new_constrs.append(constr)
+                continue
+            self.__model.remove(constr)
+            for sub in [sat, viol]:
+                if not sub:
+                    continue
+                lhs, rhs = self.__build_aggregate_z_lin_expr(sub, attribute)
+                c = self.__model.addConstr(lhs <= rhs if tail == TailType.LOWEST else lhs >= rhs)
+                new_groups.append(sub)
+                new_constrs.append(c)
+        self.__z_groups = new_groups
+        self.__z_group_constrs = new_constrs
+        return True
 
     def __add_constraints_to_model(
         self, no_of_scenarios: int,
@@ -436,7 +517,7 @@ class SketchRCLSolve:
             for c in self.__query.get_constraints()
             if c.is_cvar_constraint()
         )
-        risk_constraint_index = 0
+        stochastic_constraint_index = 0
         for constraint in self.__query.get_constraints():
             if constraint.is_package_size_constraint():
                 print('Adding package size constraint to model')
@@ -448,10 +529,29 @@ class SketchRCLSolve:
                 self.__add_deterministic_constraint_to_model(
                     constraint
                 )
+            if constraint.is_expected_sum_constraint():
+                threshold_override = None
+                if probabilistically_constrained and \
+                        stochastic_constraint_index not in trivial_constraints:
+                    threshold_override = cvar_thresholds[
+                        stochastic_constraint_index
+                    ]
+                expected_sum_model_constraint = \
+                    self.__add_expected_sum_constraint_to_model(
+                        constraint,
+                        threshold_override=threshold_override
+                    )
+                if probabilistically_constrained and \
+                        stochastic_constraint_index not in trivial_constraints:
+                    self.__risk_to_lcvar_constraint_mapping[
+                        constraint
+                    ] = expected_sum_model_constraint
+                stochastic_constraint_index += 1
+                continue
             if constraint.is_risk_constraint():
                 if probabilistically_constrained:
-                    print('Considering risk constraint', risk_constraint_index)
-                    if risk_constraint_index not in trivial_constraints:
+                    print('Considering risk constraint', stochastic_constraint_index)
+                    if stochastic_constraint_index not in trivial_constraints:
                         print('Risk constraint is not trivial')
                         if constraint.is_cvar_constraint():
                             cvarified_constraint = constraint
@@ -461,7 +561,7 @@ class SketchRCLSolve:
                                 self.__get_cvarified_constraint(
                                     constraint=constraint,
                                     cvar_threshold=cvar_thresholds[
-                                        risk_constraint_index]
+                                        stochastic_constraint_index]
                                 )
                         
                         print('Adding LCVaR constraint')
@@ -471,7 +571,7 @@ class SketchRCLSolve:
                             no_of_scenarios=no_of_scenarios,
                             no_of_scenarios_to_consider=\
                                 no_of_scenarios_to_consider[
-                                    risk_constraint_index
+                                    stochastic_constraint_index
                                 ]
                         )
                 else:
@@ -489,24 +589,13 @@ class SketchRCLSolve:
                         self.__model.addConstr(
                             gp.LinExpr(coefficients, self.__vars), gurobi_inequality, sum_limit)
                 
-                risk_constraint_index += 1
+                stochastic_constraint_index += 1
 
         if not self.__check_feasibility and not self.__optimize_lcvar and \
                 self.__query.get_objective().is_cvar_objective():
             attribute = self.__query.get_objective().get_attribute_name()
-            for idx in range(no_of_scenarios):
-                scenario_coefficients = [
-                    self.__scenarios[attribute][i][idx]
-                    for i in range(self.__no_of_vars)
-                ]
-                lin_expr = gp.LinExpr(scenario_coefficients, self.__vars)
-                if self.__query.get_objective().get_tail_type() == \
-                        TailType.LOWEST:
-                    self.__model.addConstr(
-                        self.__Zs[idx] <= lin_expr - self.__V)
-                else:
-                    self.__model.addConstr(
-                        self.__Zs[idx] >= lin_expr - self.__V)
+            self.__z_lazy_active = False
+            self.__init_z_lazy_constraints(no_of_scenarios, attribute)
 
 
     def __add_objective_to_model(
@@ -628,24 +717,51 @@ class SketchRCLSolve:
             no_of_scenarios)
         print('Model setup')        
 
-    def __get_package(self):
-        self.__metrics.start_optimizer()
-        self.__model.optimize()
-        self.__metrics.end_optimizer()
+    def __extract_package_from_model(self):
+        """Extract solution from model variables."""
         package_dict = {}
         idx = 0
         try:
             for var in self.__vars:
                 if var.x > 0:
-                    package_dict[
-                        self.__ids[idx]] = \
-                            var.x
+                    package_dict[self.__ids[idx]] = var.x
                 idx += 1
         except AttributeError:
             return None
         if not package_dict:
             return None
         return package_dict
+
+    def __get_package_with_z_refinement(self):
+        """Solve with lazy Z_s constraint refinement."""
+        attribute = self.__query.get_objective().get_attribute_name()
+        max_rounds = len(self.__Zs) + 1
+        for _ in range(max_rounds):
+            self.__metrics.start_optimizer()
+            self.__model.optimize()
+            self.__metrics.end_optimizer()
+            status = self.__model.Status
+            if status in (GRB.INFEASIBLE, GRB.INF_OR_UNBD, GRB.UNBOUNDED):
+                return None
+            if status not in (GRB.OPTIMAL, GRB.SUBOPTIMAL):
+                return self.__extract_package_from_model()
+            try:
+                _ = self.__V.x
+            except AttributeError:
+                return None
+            if not self.__refine_z_constraints(attribute):
+                break
+        return self.__extract_package_from_model()
+
+    def __get_package(self):
+        if (not self.__check_feasibility and not self.__optimize_lcvar
+                and self.__query.get_objective().is_cvar_objective()
+                and self.__z_lazy_active):
+            return self.__get_package_with_z_refinement()
+        self.__metrics.start_optimizer()
+        self.__model.optimize()
+        self.__metrics.end_optimizer()
+        return self.__extract_package_from_model()
 
 
     def __get_package_with_indices(self):
@@ -804,7 +920,131 @@ class SketchRCLSolve:
                 max_abs_diff = diff
         
         return max_abs_diff
-    
+
+
+    def __repair_lower_bound_anchors(
+        self,
+        no_of_scenarios: int,
+        cvar_upper_bounds: list[float | int],
+        cvar_lower_bounds: list[float | int],
+        trivial_constraints: list[int],
+        no_of_scenarios_to_consider: list[int],
+        can_add_scenarios: bool
+    ) -> tuple[list[float | int], bool, bool, object, float | None]:
+        cvar_lower_bounds = list(cvar_lower_bounds)
+        if len(cvar_lower_bounds) == 0:
+            return cvar_lower_bounds, False, False, None, None
+
+        print('[LowerRepair] Starting | upper bounds:', cvar_upper_bounds,
+              '| lower bounds:', cvar_lower_bounds,
+              '| scenarios:', no_of_scenarios_to_consider)
+        is_model_setup = False
+        best_feasible_package = None
+        best_feasible_objective = None
+        repair_iterations = 0
+
+        while True:
+            print('[LowerRepair] Trying lower bounds:', cvar_lower_bounds)
+            if not is_model_setup:
+                self.__model_setup(
+                    no_of_scenarios=no_of_scenarios,
+                    no_of_scenarios_to_consider=no_of_scenarios_to_consider,
+                    probabilistically_constrained=True,
+                    cvar_lower_bounds=cvar_lower_bounds,
+                    trivial_constraints=trivial_constraints
+                )
+                is_model_setup = True
+            else:
+                stochastic_constraint_index = 0
+                for constraint in self.__get_searchable_constraints():
+                    if stochastic_constraint_index not in trivial_constraints:
+                        self.__risk_to_lcvar_constraint_mapping[
+                            constraint].rhs = cvar_lower_bounds[
+                                stochastic_constraint_index]
+                    stochastic_constraint_index += 1
+
+            package = self.__get_package()
+            print('[LowerRepair] Package:', package)
+            if package is None:
+                print('[LowerRepair] No package found; keeping current'
+                      ' lower bounds as heuristic anchors.')
+                return cvar_lower_bounds, is_model_setup, False, best_feasible_package, best_feasible_objective
+
+            package_with_indices = self.__get_package_with_indices()
+            unacceptable_diff, _ = \
+                self.__is_objective_value_relative_diff_high(
+                    package, package_with_indices,
+                    no_of_scenarios
+                )
+            if unacceptable_diff and can_add_scenarios:
+                print('[LowerRepair] Needs more scenarios (obj diff)')
+                return cvar_lower_bounds, is_model_setup, True, best_feasible_package, best_feasible_objective
+
+            violated_constraints = []
+            stochastic_constraint_index = 0
+            for constraint in self.__get_searchable_constraints():
+                is_trivial = stochastic_constraint_index in trivial_constraints
+                if is_trivial:
+                    stochastic_constraint_index += 1
+                    continue
+
+                if constraint.is_expected_sum_constraint():
+                    satisfied = \
+                        self.__validator.get_expected_sum_constraint_feasibility(
+                            package, constraint
+                        )
+                elif constraint.is_cvar_constraint():
+                    cvar_validation = \
+                        self.__validator.get_cvar_among_validation_scenarios(
+                            package, constraint
+                        )
+                    satisfied = self.__is_cvar_constraint_satisfied(
+                        constraint, cvar_validation
+                    )
+                else:
+                    var_validation = \
+                        self.__validator.get_var_among_validation_scenarios(
+                            package, constraint
+                        )
+                    satisfied = self.__is_var_constraint_satisfied(
+                        constraint, var_validation
+                    )
+
+                if not satisfied:
+                    violated_constraints.append(stochastic_constraint_index)
+                stochastic_constraint_index += 1
+
+            if len(violated_constraints) == 0:
+                print('[LowerRepair] Lower bounds validated.')
+                if best_feasible_package is None:
+                    best_feasible_package = package
+                    best_feasible_objective = self.__validator.get_validation_objective_value(package)
+                else:
+                    cand_obj = self.__validator.get_validation_objective_value(package)
+                    if (self.__query.get_objective().get_objective_type() == ObjectiveType.MAXIMIZATION and cand_obj > best_feasible_objective) or \
+                       (self.__query.get_objective().get_objective_type() != ObjectiveType.MAXIMIZATION and cand_obj < best_feasible_objective):
+                        best_feasible_package = package
+                        best_feasible_objective = cand_obj
+                return cvar_lower_bounds, is_model_setup, False, best_feasible_package, best_feasible_objective
+
+            print('[LowerRepair] Violated constraint indices:',
+                  violated_constraints)
+            for violated_index in violated_constraints:
+                diff = abs(
+                    cvar_upper_bounds[violated_index] -
+                    cvar_lower_bounds[violated_index]
+                )
+                if cvar_lower_bounds[violated_index] <= \
+                        cvar_upper_bounds[violated_index]:
+                    cvar_lower_bounds[violated_index] -= diff
+                else:
+                    cvar_lower_bounds[violated_index] += diff
+            print('[LowerRepair] Updated lower bounds:',
+                  cvar_lower_bounds)
+            repair_iterations += 1
+            if repair_iterations >= 10:
+                print('[LowerRepair] Max iterations reached; requesting more scenarios.')
+                return cvar_lower_bounds, is_model_setup, True, best_feasible_package, best_feasible_objective
 
     def __cvar_threshold_search(
         self, no_of_scenarios: int,
@@ -820,6 +1060,7 @@ class SketchRCLSolve:
         cvar_lower_bounds = list(cvar_lower_bounds)
         best_feasible_package = None
         best_feasible_objective = None
+        found_non_none_infeasible = False
         if not is_model_setup and \
                 self.__l_inf(cvar_upper_bounds, cvar_lower_bounds) < \
                 self.__bisection_threshold:
@@ -863,15 +1104,14 @@ class SketchRCLSolve:
                 is_model_setup = True
             
             else:
-                risk_constraint_index = 0
-                for constraint in self.__query.get_constraints():
-                    if constraint.is_risk_constraint():
-                        if risk_constraint_index not in \
-                            trivial_constraints:
-                            self.__risk_to_lcvar_constraint_mapping[
-                                constraint].rhs = cvar_mid_thresholds[
-                                    risk_constraint_index]
-                        risk_constraint_index += 1
+                stochastic_constraint_index = 0
+                for constraint in self.__get_searchable_constraints():
+                    if stochastic_constraint_index not in \
+                        trivial_constraints:
+                        self.__risk_to_lcvar_constraint_mapping[
+                            constraint].rhs = cvar_mid_thresholds[
+                                stochastic_constraint_index]
+                    stochastic_constraint_index += 1
             
             package = self.__get_package()
             print('Package:', package)
@@ -895,61 +1135,81 @@ class SketchRCLSolve:
             
             all_constraints_satisfied = True
             all_constraints_violated = True
-            risk_constraint_index = 0
+            stochastic_constraint_index = 0
             
-            for constraint in self.__query.get_constraints():
-                if constraint.is_risk_constraint():
-                    if risk_constraint_index not in trivial_constraints:
-                        if constraint.is_cvar_constraint():
-                            cvar_validation = \
+            for constraint in self.__get_searchable_constraints():
+                is_trivial = stochastic_constraint_index in trivial_constraints
+                if constraint.is_expected_sum_constraint():
+                    expected_sum_satisfied = \
+                        self.__validator.get_expected_sum_constraint_feasibility(
+                            package, constraint
+                        )
+                    if expected_sum_satisfied:
+                        print('Expected sum constraint satisfied')
+                        all_constraints_violated = False
+                        if not is_trivial:
+                            cvar_lower_bounds[stochastic_constraint_index] = \
+                                cvar_mid_thresholds[stochastic_constraint_index]
+                    else:
+                        print('Expected sum constraint not satisfied')
+                        all_constraints_satisfied = False
+                        if not is_trivial:
+                            cvar_upper_bounds[stochastic_constraint_index] = \
+                                cvar_mid_thresholds[stochastic_constraint_index]
+                    stochastic_constraint_index += 1
+                    continue
+
+                if not is_trivial:
+                    if constraint.is_cvar_constraint():
+                        cvar_validation = \
+                            self.__validator.get_cvar_among_validation_scenarios(
+                                package, constraint
+                            )
+                        
+                        if self.__is_cvar_constraint_satisfied(
+                            constraint, cvar_validation
+                        ):
+                            print('CVaR constraint satisfied')
+                            all_constraints_violated = False
+                            cvar_lower_bounds[stochastic_constraint_index] = \
+                                cvar_mid_thresholds[stochastic_constraint_index]
+                        else:
+                            print('CVaR constraint not satisfied')
+                            all_constraints_satisfied = False
+                            cvar_upper_bounds[stochastic_constraint_index] = \
+                                cvar_mid_thresholds[stochastic_constraint_index]
+                
+                    if constraint.is_var_constraint():
+                        var_validation = \
+                            self.__validator.get_var_among_validation_scenarios(
+                                package, constraint
+                            )
+                        if self.__is_var_constraint_satisfied(
+                            constraint, var_validation
+                        ):
+                            print('VaR constraint satisfied')
+                            cvarified_constraint = \
+                                self.__get_cvarified_constraint(
+                                    constraint,
+                                    constraint.get_sum_limit()
+                                )
+                            cvarified_cvar_validation = \
                                 self.__validator.get_cvar_among_validation_scenarios(
-                                    package, constraint
+                                    package, cvarified_constraint
                                 )
-                            
                             if self.__is_cvar_constraint_satisfied(
-                                constraint, cvar_validation
+                                cvarified_constraint,
+                                cvarified_cvar_validation
                             ):
-                                print('CVaR constraint satisfied')
                                 all_constraints_violated = False
-                                cvar_lower_bounds[risk_constraint_index] = \
-                                    cvar_mid_thresholds[risk_constraint_index]
-                            else:
-                                print('CVaR constraint not satisfied')
-                                all_constraints_satisfied = False
-                                cvar_upper_bounds[risk_constraint_index] = \
-                                    cvar_mid_thresholds[risk_constraint_index]
-                    
-                        if constraint.is_var_constraint():
-                            var_validation = \
-                                self.__validator.get_var_among_validation_scenarios(
-                                    package, constraint
-                                )
-                            if self.__is_var_constraint_satisfied(
-                                constraint, var_validation
-                            ):
-                                print('VaR constraint satisfied')
-                                cvarified_constraint = \
-                                    self.__get_cvarified_constraint(
-                                        constraint,
-                                        constraint.get_sum_limit()
-                                    )
-                                cvarified_cvar_validation = \
-                                    self.__validator.get_cvar_among_validation_scenarios(
-                                        package, cvarified_constraint
-                                    )
-                                if self.__is_cvar_constraint_satisfied(
-                                    cvarified_constraint,
-                                    cvarified_cvar_validation
-                                ):
-                                    all_constraints_violated = False
-                                cvar_lower_bounds[risk_constraint_index] = \
-                                    cvar_mid_thresholds[risk_constraint_index]
-                            else:
-                                print('VaR constraint not satisfied')
-                                all_constraints_satisfied = False
-                                cvar_upper_bounds[risk_constraint_index] = \
-                                    cvar_mid_thresholds[risk_constraint_index]
-                    risk_constraint_index += 1
+                            cvar_lower_bounds[stochastic_constraint_index] = \
+                                cvar_mid_thresholds[stochastic_constraint_index]
+                        else:
+                            print('VaR constraint not satisfied')
+                            all_constraints_satisfied = False
+                            cvar_upper_bounds[stochastic_constraint_index] = \
+                                cvar_mid_thresholds[stochastic_constraint_index]
+                stochastic_constraint_index += 1
 
             if all_constraints_satisfied:
                 if self.__is_objective_value_enough(
@@ -970,6 +1230,10 @@ class SketchRCLSolve:
                             validation_objective_value < best_feasible_objective):
                         best_feasible_package = package
                         best_feasible_objective = validation_objective_value
+            else:
+                # Package is not None but constraints are not satisfied
+                if package is not None:
+                    found_non_none_infeasible = True
 
             if all_constraints_violated:
                 if self.__query.get_objective().get_objective_type() ==\
@@ -994,6 +1258,10 @@ class SketchRCLSolve:
             objective_upper_bound)
         result.set_cvar_thresholds(
             cvar_lower_bounds)
+        if best_feasible_package is not None:
+            result.set_best_feasible_package(best_feasible_package)
+            result.set_best_feasible_objective(best_feasible_objective)
+        result.set_found_non_none_infeasible(found_non_none_infeasible)
         return result
             
 
@@ -1010,6 +1278,7 @@ class SketchRCLSolve:
         max_no_of_scenarios_to_consider = list(max_no_of_scenarios_to_consider)
         best_feasible_package = None
         best_feasible_objective = None
+        found_non_none_infeasible = False
         while self.__l_inf(
             min_no_of_scenarios_to_consider,
             max_no_of_scenarios_to_consider
@@ -1038,14 +1307,14 @@ class SketchRCLSolve:
                 is_model_setup = True
             else:
                 print('Using existing model')
-                risk_constraint_index = 0
-                for constraint in self.__query.get_constraints():
-                    if constraint.is_risk_constraint():
-                        if risk_constraint_index not in trivial_constraints:
-                            print('Risk constraint', risk_constraint_index,
+                stochastic_constraint_index = 0
+                for constraint in self.__get_searchable_constraints():
+                    if constraint.is_risk_constraint() and \
+                            stochastic_constraint_index not in trivial_constraints:
+                            print('Risk constraint', stochastic_constraint_index,
                                   'is not trivial')
                             print('Getting constraints with',
-                                  mid_no_of_scenarios_to_consider[risk_constraint_index],
+                                  mid_no_of_scenarios_to_consider[stochastic_constraint_index],
                                   'scenarios from each tuple')
                             if constraint.is_cvar_constraint():
                                 cvarified_constraint = constraint
@@ -1053,12 +1322,12 @@ class SketchRCLSolve:
                                 cvarified_constraint = \
                                     self.__get_cvarified_constraint(
                                         constraint, cvar_thresholds[
-                                            risk_constraint_index])
+                                            stochastic_constraint_index])
                             coefficients = \
                                 self.__get_cvar_constraint_coefficients(
                                     cvarified_constraint,
                                     mid_no_of_scenarios_to_consider[
-                                        risk_constraint_index],
+                                        stochastic_constraint_index],
                                     no_of_scenarios)
                         
                             for _ in range(len(self.__vars)):
@@ -1068,7 +1337,7 @@ class SketchRCLSolve:
                                     self.__vars[_], coefficients[_]
                                 )
                             print('Changing constraint coefficients')                    
-                        risk_constraint_index += 1
+                    stochastic_constraint_index += 1
             
             print('Getting package with new coefficients')
             package = self.__get_package()
@@ -1096,88 +1365,90 @@ class SketchRCLSolve:
             
             all_constraints_satisfied = True
             all_constraints_violated = True
-            risk_constraint_index = 0
+            stochastic_constraint_index = 0
 
-            for constraint in self.__query.get_constraints():
-                if constraint.is_risk_constraint():
-                    if risk_constraint_index not in trivial_constraints:
-                        if constraint.is_cvar_constraint():
-                            print('Checking CVaR constraint satisfaction')
-                            cvar_validation = \
+            for constraint in self.__get_searchable_constraints():
+                is_trivial = stochastic_constraint_index in trivial_constraints
+                if constraint.is_expected_sum_constraint():
+                    expected_sum_satisfied = \
+                        self.__validator.get_expected_sum_constraint_feasibility(
+                            package, constraint
+                        )
+                    if expected_sum_satisfied:
+                        print('Expected sum constraint satisfied')
+                        all_constraints_violated = False
+                    else:
+                        print('Expected sum constraint not satisfied')
+                        all_constraints_satisfied = False
+                    stochastic_constraint_index += 1
+                    continue
+
+                if not is_trivial:
+                    if constraint.is_cvar_constraint():
+                        print('Checking CVaR constraint satisfaction')
+                        cvar_validation = \
+                            self.__validator.get_cvar_among_validation_scenarios(
+                                package, constraint
+                            )
+
+                        if self.__is_cvar_constraint_satisfied(
+                            constraint, cvar_validation
+                        ):
+                            print('CVaR constraint is satisfied')
+                            all_constraints_violated = False
+                            min_no_of_scenarios_to_consider[stochastic_constraint_index] = \
+                                mid_no_of_scenarios_to_consider[stochastic_constraint_index]
+                            print('Relaxing risk constraint', stochastic_constraint_index,
+                                  'by updating the min. scenario bound to',
+                                  min_no_of_scenarios_to_consider[stochastic_constraint_index])
+                        else:
+                            print('CVaR constraint is not satisfied')
+                            all_constraints_satisfied = False
+                            max_no_of_scenarios_to_consider[stochastic_constraint_index] = \
+                                mid_no_of_scenarios_to_consider[stochastic_constraint_index] - 1
+                            print('Tightening risk constraint', stochastic_constraint_index,
+                                  'by updating the max. scenario bound to',
+                                  max_no_of_scenarios_to_consider[stochastic_constraint_index])
+
+                    if constraint.is_var_constraint():
+                        print('Checking VaR constraint satisfaction')
+                        var_validation = \
+                            self.__validator.get_var_among_validation_scenarios(
+                                package, constraint
+                            )
+
+                        if self.__is_var_constraint_satisfied(
+                            constraint, var_validation
+                        ):
+                            print('VaR constraint satisfied')
+                            cvarified_constraint = \
+                                self.__get_cvarified_constraint(
+                                    constraint,
+                                    constraint.get_sum_limit()
+                                )
+                            cvarified_cvar_validation = \
                                 self.__validator.get_cvar_among_validation_scenarios(
-                                    package, constraint
+                                    package, cvarified_constraint
                                 )
-
                             if self.__is_cvar_constraint_satisfied(
-                                constraint, cvar_validation
+                                cvarified_constraint,
+                                cvarified_cvar_validation
                             ):
-                                print('CVaR constraint is satisfied')
                                 all_constraints_violated = False
-                                min_no_of_scenarios_to_consider[risk_constraint_index] = \
-                                    mid_no_of_scenarios_to_consider[risk_constraint_index]
-                                print('Relaxing risk constraint', risk_constraint_index,
-                                      'by updating the min. scenario bound to',
-                                      min_no_of_scenarios_to_consider[risk_constraint_index])
-                            else:
-                                print('CVaR constraint is not satisfied')
-                                all_constraints_satisfied = False
-                                max_no_of_scenarios_to_consider[risk_constraint_index] = \
-                                    mid_no_of_scenarios_to_consider[risk_constraint_index] - 1
-                                print('Tightening risk constraint', risk_constraint_index,
-                                      'by updating the max. scenario bound to',
-                                      max_no_of_scenarios_to_consider[risk_constraint_index])
-                                '''
-                                for ind in range(len(
-                                    max_no_of_scenarios_to_consider)):
-                                    max_no_of_scenarios_to_consider[ind]\
-                                        -= 1
-                                '''
-
-                        if constraint.is_var_constraint():
-                            print('Checking VaR constraint satisfaction')
-                            var_validation = \
-                                self.__validator.get_var_among_validation_scenarios(
-                                    package, constraint
-                                )
-
-                            if self.__is_var_constraint_satisfied(
-                                constraint, var_validation
-                            ):
-                                print('VaR constraint satisfied')
-                                cvarified_constraint = \
-                                    self.__get_cvarified_constraint(
-                                        constraint,
-                                        constraint.get_sum_limit()
-                                    )
-                                cvarified_cvar_validation = \
-                                    self.__validator.get_cvar_among_validation_scenarios(
-                                        package, cvarified_constraint
-                                    )
-                                if self.__is_cvar_constraint_satisfied(
-                                    cvarified_constraint,
-                                    cvarified_cvar_validation
-                                ):
-                                    all_constraints_violated = False
-                                min_no_of_scenarios_to_consider[risk_constraint_index] = \
-                                    mid_no_of_scenarios_to_consider[risk_constraint_index]
-                                print('Updating min no. of scenarios to consider for risk'
-                                      'constraint', risk_constraint_index, 'to',
-                                      min_no_of_scenarios_to_consider[risk_constraint_index])
-                            else:
-                                print('VaR constraint not satisfied')
-                                all_constraints_satisfied = False
-                                max_no_of_scenarios_to_consider[risk_constraint_index] = \
-                                    mid_no_of_scenarios_to_consider[risk_constraint_index] - 1
-                                print('Updating max no. of scenarios to consider for risk',
-                                      'constraint', risk_constraint_index, 'to',
-                                      max_no_of_scenarios_to_consider[risk_constraint_index])
-                                '''
-                                for ind in range(len(
-                                    max_no_of_scenarios_to_consider)):
-                                    max_no_of_scenarios_to_consider[ind]\
-                                        -= 1
-                                '''
-                    risk_constraint_index += 1
+                            min_no_of_scenarios_to_consider[stochastic_constraint_index] = \
+                                mid_no_of_scenarios_to_consider[stochastic_constraint_index]
+                            print('Updating min no. of scenarios to consider for risk'
+                                  'constraint', stochastic_constraint_index, 'to',
+                                  min_no_of_scenarios_to_consider[stochastic_constraint_index])
+                        else:
+                            print('VaR constraint not satisfied')
+                            all_constraints_satisfied = False
+                            max_no_of_scenarios_to_consider[stochastic_constraint_index] = \
+                                mid_no_of_scenarios_to_consider[stochastic_constraint_index] - 1
+                            print('Updating max no. of scenarios to consider for risk',
+                                  'constraint', stochastic_constraint_index, 'to',
+                                  max_no_of_scenarios_to_consider[stochastic_constraint_index])
+                stochastic_constraint_index += 1
 
             if all_constraints_satisfied:
                 print('All constraints are satisfied')
@@ -1202,6 +1473,10 @@ class SketchRCLSolve:
                             validation_objective_value < best_feasible_objective):
                         best_feasible_package = package
                         best_feasible_objective = validation_objective_value
+            else:
+                # Package is not None but constraints are not satisfied
+                if package is not None:
+                    found_non_none_infeasible = True
 
             if all_constraints_violated:
                 if self.__query.get_objective().get_objective_type() ==\
@@ -1228,6 +1503,10 @@ class SketchRCLSolve:
         print('Updating the min no of scenarios to consider to',
               min_no_of_scenarios_to_consider)
         result.set_scenarios_to_consider(min_no_of_scenarios_to_consider)
+        if best_feasible_package is not None:
+            result.set_best_feasible_package(best_feasible_package)
+            result.set_best_feasible_objective(best_feasible_objective)
+        result.set_found_non_none_infeasible(found_non_none_infeasible)
         return result
             
     
@@ -1272,104 +1551,137 @@ class SketchRCLSolve:
         self, no_of_scenarios,
         probabilistically_unconstrained_package
     ):
-        risk_constraint_index = 0
+        stochastic_constraint_index = 0
         cvar_lower_bounds = []
         cvar_upper_bounds = []
         min_no_of_scenarios_to_consider = []
         max_no_of_scenarios_to_consider = []
         trivial_constraints = []
-        for constraint in self.__query.get_constraints():
-            if constraint.is_risk_constraint():
-                is_satisfied = False
-                if constraint.is_var_constraint():
-                    if self.__validator.get_var_constraint_feasibility(
-                        probabilistically_unconstrained_package,
-                        constraint):
-                        is_satisfied = True
-                if constraint.is_cvar_constraint():
-                    if self.__validator.get_cvar_constraint_feasibility(
-                        probabilistically_unconstrained_package,
-                        constraint):
-                        is_satisfied = True
-                if is_satisfied:
-                    trivial_constraints.append(risk_constraint_index)
-                    cvar_lower_bounds.append(constraint.get_sum_limit())
-                    cvar_upper_bounds.append(constraint.get_sum_limit())
-                    if constraint.is_cvar_constraint():
-                        no_of_scenarios_to_consider =\
-                            max(1, int(np.floor(constraint.get_percentage_of_scenarios()\
-                                     *no_of_scenarios/100.0)))
-                    else:
-                        no_of_scenarios_to_consider =\
-                            max(1, int(np.floor((1 - constraint.get_probability_threshold())\
-                                     *no_of_scenarios)))
-                    min_no_of_scenarios_to_consider.append(
-                        no_of_scenarios_to_consider
-                    )
-                    max_no_of_scenarios_to_consider.append(
-                        no_of_scenarios_to_consider
-                    )
-                    
+        for constraint in self.__get_searchable_constraints():
+            is_satisfied = False
+            if constraint.is_expected_sum_constraint():
+                if self.__validator.get_expected_sum_constraint_feasibility(
+                    probabilistically_unconstrained_package,
+                    constraint
+                ):
+                    is_satisfied = True
+            elif constraint.is_var_constraint():
+                if self.__validator.get_var_constraint_feasibility(
+                    probabilistically_unconstrained_package,
+                    constraint):
+                    is_satisfied = True
+            elif constraint.is_cvar_constraint():
+                if self.__validator.get_cvar_constraint_feasibility(
+                    probabilistically_unconstrained_package,
+                    constraint):
+                    is_satisfied = True
+            if is_satisfied:
+                trivial_constraints.append(stochastic_constraint_index)
+                cvar_lower_bounds.append(constraint.get_sum_limit())
+                cvar_upper_bounds.append(constraint.get_sum_limit())
+                if constraint.is_expected_sum_constraint():
+                    no_of_scenarios_to_consider = 1
+                elif constraint.is_cvar_constraint():
+                    no_of_scenarios_to_consider =\
+                        max(1, int(np.floor(constraint.get_percentage_of_scenarios()\
+                                 *no_of_scenarios/100.0)))
                 else:
-                    if constraint.is_cvar_constraint():
-                        cvar_threshold = \
-                            self.__get_linearized_cvar_among_optimization_scenarios(
-                                probabilistically_unconstrained_package,
-                                constraint, no_of_scenarios
-                            )
-                        if constraint.get_inequality_sign() == \
-                                RelationalOperators.GREATER_THAN_OR_EQUAL_TO:
-                            cvar_upper_bounds.append(
-                                max(cvar_threshold, constraint.get_sum_limit()))
-                        else:
-                            cvar_upper_bounds.append(cvar_threshold)
-                        expected_sum = \
-                            self.__get_expected_sum_among_optimization_scenarios(
-                                probabilistically_unconstrained_package,
-                                constraint.get_attribute_name())
-                        if constraint.get_inequality_sign() == \
-                                RelationalOperators.LESS_THAN_OR_EQUAL_TO:
-                            cvar_lower_bounds.append(
-                                min(expected_sum, constraint.get_sum_limit()))
-                        else:
-                            cvar_lower_bounds.append(expected_sum)
-                        no_of_scenarios_to_consider =\
-                            max(1, int(np.floor(
-                                constraint.get_percentage_of_scenarios()\
-                                 *no_of_scenarios/100.0)))
-                        min_no_of_scenarios_to_consider.append(
-                            no_of_scenarios_to_consider
-                        )
-                        max_no_of_scenarios_to_consider.append(
-                            no_of_scenarios
-                        )
-                    else:
-                        cvarified_constraint = \
-                            self.__get_cvarified_constraint(
-                                constraint, constraint.get_sum_limit())
+                    no_of_scenarios_to_consider =\
+                        max(1, int(np.ceil((1 - constraint.get_probability_threshold())\
+                                 *no_of_scenarios)))
+                min_no_of_scenarios_to_consider.append(
+                    no_of_scenarios_to_consider
+                )
+                max_no_of_scenarios_to_consider.append(
+                    no_of_scenarios_to_consider
+                )
+                stochastic_constraint_index += 1
+                continue
+            
+            if constraint.is_expected_sum_constraint():
+                expected_sum = \
+                    self.__get_expected_sum_among_optimization_scenarios(
+                        probabilistically_unconstrained_package,
+                        constraint.get_attribute_name()
+                    )
+                if constraint.get_inequality_sign() == \
+                        RelationalOperators.LESS_THAN_OR_EQUAL_TO:
+                    cvar_lower_bounds.append(
+                        min(expected_sum, constraint.get_sum_limit()))
+                    cvar_upper_bounds.append(constraint.get_sum_limit())
+                else:
+                    cvar_lower_bounds.append(constraint.get_sum_limit())
+                    cvar_upper_bounds.append(
+                        max(expected_sum, constraint.get_sum_limit()))
+                min_no_of_scenarios_to_consider.append(1)
+                max_no_of_scenarios_to_consider.append(1)
+                stochastic_constraint_index += 1
+                continue
 
-                        cvar_threshold = \
-                            self.__get_linearized_cvar_among_optimization_scenarios(
-                                probabilistically_unconstrained_package,
-                                cvarified_constraint, no_of_scenarios
-                            )
-                        cvar_upper_bounds.append(cvar_threshold)
-                        cvar_lower_bounds.append(
-                            self.__get_expected_sum_among_optimization_scenarios(
-                                probabilistically_unconstrained_package,
-                                constraint.get_attribute_name()))
-                        no_of_scenarios_to_consider =\
-                            max(1, int(np.floor(
-                                cvarified_constraint.get_percentage_of_scenarios()\
-                                 *no_of_scenarios/100.0)))
-                        min_no_of_scenarios_to_consider.append(
-                            no_of_scenarios_to_consider
-                        )
-                        max_no_of_scenarios_to_consider.append(
-                            no_of_scenarios
-                        )
-                risk_constraint_index += 1
+            if constraint.is_cvar_constraint():
+                cvar_threshold = \
+                    self.__get_linearized_cvar_among_optimization_scenarios(
+                        probabilistically_unconstrained_package,
+                        constraint, no_of_scenarios
+                    )
+                if constraint.get_inequality_sign() == \
+                        RelationalOperators.GREATER_THAN_OR_EQUAL_TO:
+                    cvar_upper_bounds.append(
+                        max(cvar_threshold, constraint.get_sum_limit()))
+                else:
+                    cvar_upper_bounds.append(cvar_threshold)
+                expected_sum = \
+                    self.__get_expected_sum_among_optimization_scenarios(
+                        probabilistically_unconstrained_package,
+                        constraint.get_attribute_name())
+                if constraint.get_inequality_sign() == \
+                        RelationalOperators.LESS_THAN_OR_EQUAL_TO:
+                    cvar_lower_bounds.append(
+                        min(expected_sum, constraint.get_sum_limit()))
+                else:
+                    cvar_lower_bounds.append(expected_sum)
+                no_of_scenarios_to_consider =\
+                    max(1, int(np.floor(
+                        constraint.get_percentage_of_scenarios()\
+                         *no_of_scenarios/100.0)))
+                min_no_of_scenarios_to_consider.append(
+                    no_of_scenarios_to_consider
+                )
+                max_no_of_scenarios_to_consider.append(
+                    no_of_scenarios
+                )
+            else:
+                cvarified_constraint = \
+                    self.__get_cvarified_constraint(
+                        constraint, constraint.get_sum_limit())
 
+                cvar_threshold = \
+                    self.__get_linearized_cvar_among_optimization_scenarios(
+                        probabilistically_unconstrained_package,
+                        cvarified_constraint, no_of_scenarios
+                    )
+                cvar_upper_bounds.append(cvar_threshold)
+                cvar_lower_bounds.append(
+                    self.__get_expected_sum_among_optimization_scenarios(
+                        probabilistically_unconstrained_package,
+                        constraint.get_attribute_name()))
+                no_of_scenarios_to_consider =\
+                    max(1, int(np.floor(
+                        cvarified_constraint.get_percentage_of_scenarios()\
+                         *no_of_scenarios/100.0)))
+                min_no_of_scenarios_to_consider.append(
+                    no_of_scenarios_to_consider
+                )
+                max_no_of_scenarios_to_consider.append(
+                    no_of_scenarios
+                )
+            stochastic_constraint_index += 1
+
+        for idx in range(len(cvar_lower_bounds)):
+            if cvar_lower_bounds[idx] > cvar_upper_bounds[idx]:
+                cvar_upper_bounds[idx] -= cvar_upper_bounds[idx]
+            else:
+                cvar_upper_bounds[idx] += cvar_upper_bounds[idx]
         return cvar_upper_bounds, cvar_lower_bounds,\
             max_no_of_scenarios_to_consider,\
             min_no_of_scenarios_to_consider,\
@@ -1435,7 +1747,9 @@ class SketchRCLSolve:
         self.__preprocess_lcvar_prefix_sums()
 
         is_model_setup = False
-            
+        global_best_feasible_package = None
+        global_best_feasible_objective = None
+
         print('CVaR upper bounds:', cvar_upper_bounds)
         print('CVaR lower bounds:', cvar_lower_bounds)
         print('Min No of Scenarios to consider:',
@@ -1443,6 +1757,29 @@ class SketchRCLSolve:
         print('Max no of scenarios to consider:',
               max_no_of_scenarios_to_consider)
         print('Trivial constraints:', trivial_constraints)
+
+        cvar_lower_bounds, is_model_setup, needs_more_scenarios, repair_feasible_package, repair_feasible_objective = \
+            self.__repair_lower_bound_anchors(
+                no_of_scenarios=no_of_scenarios,
+                cvar_upper_bounds=cvar_upper_bounds,
+                cvar_lower_bounds=cvar_lower_bounds,
+                trivial_constraints=trivial_constraints,
+                no_of_scenarios_to_consider=\
+                    min_no_of_scenarios_to_consider,
+                can_add_scenarios=can_add_scenarios
+            )
+
+        if repair_feasible_package is not None:
+            if global_best_feasible_package is None or \
+                (self.__query.get_objective().get_objective_type() == ObjectiveType.MAXIMIZATION and repair_feasible_objective > global_best_feasible_objective) or \
+                (self.__query.get_objective().get_objective_type() != ObjectiveType.MAXIMIZATION and repair_feasible_objective < global_best_feasible_objective):
+                global_best_feasible_package = repair_feasible_package
+                global_best_feasible_objective = repair_feasible_objective
+
+        if can_add_scenarios and needs_more_scenarios:
+            return (None, 0.0, True)
+
+        print('CVaR lower bounds after repair:', cvar_lower_bounds)
 
         init_diff = max(
             self.__l_inf(cvar_upper_bounds, cvar_lower_bounds),
@@ -1498,6 +1835,24 @@ class SketchRCLSolve:
             objective_upper_bound = \
                 threshold_search_result.get_objective_upper_bound()
 
+            if threshold_search_result.get_best_feasible_package() is not None:
+                cand_pkg = threshold_search_result.get_best_feasible_package()
+                cand_obj = threshold_search_result.get_best_feasible_objective()
+                if global_best_feasible_package is None or \
+                    (self.__query.get_objective().get_objective_type() == \
+                        ObjectiveType.MAXIMIZATION and cand_obj > global_best_feasible_objective) or \
+                    (self.__query.get_objective().get_objective_type() != \
+                        ObjectiveType.MAXIMIZATION and cand_obj < global_best_feasible_objective):
+                    global_best_feasible_package = cand_pkg
+                    global_best_feasible_objective = cand_obj
+
+            # Check if global best is within approximation bound of objective upper bound
+            if global_best_feasible_package is not None and \
+                    self.__is_objective_value_enough(global_best_feasible_objective, objective_upper_bound):
+                print('Best feasible package within approximation bound; returning.')
+                self.__metrics.end_execution(global_best_feasible_objective, no_of_scenarios)
+                return (global_best_feasible_package, global_best_feasible_objective, False)
+
             coefficient_search_result = \
                 self.__cvar_coefficient_search(
                     no_of_scenarios,
@@ -1532,7 +1887,38 @@ class SketchRCLSolve:
                 coefficient_search_result.get_scenarios_to_consider()
             objective_upper_bound = \
                 coefficient_search_result.get_objective_upper_bound()
-                
+
+            if coefficient_search_result.get_best_feasible_package() is not None:
+                cand_pkg = coefficient_search_result.get_best_feasible_package()
+                cand_obj = coefficient_search_result.get_best_feasible_objective()
+                if global_best_feasible_package is None or \
+                    (self.__query.get_objective().get_objective_type() == \
+                        ObjectiveType.MAXIMIZATION and cand_obj > global_best_feasible_objective) or \
+                    (self.__query.get_objective().get_objective_type() != \
+                        ObjectiveType.MAXIMIZATION and cand_obj < global_best_feasible_objective):
+                    global_best_feasible_package = cand_pkg
+                    global_best_feasible_objective = cand_obj
+
+            # Check if global best is within approximation bound of objective upper bound
+            if global_best_feasible_package is not None and \
+                    self.__is_objective_value_enough(global_best_feasible_objective, objective_upper_bound):
+                print('Best feasible package within approximation bound; returning.')
+                self.__metrics.end_execution(global_best_feasible_objective, no_of_scenarios)
+                return (global_best_feasible_package, global_best_feasible_objective, False)
+
+            # Convergence check: if no non-None infeasible packages found in this round
+            if not (threshold_search_result.get_found_non_none_infeasible()
+                    or coefficient_search_result.get_found_non_none_infeasible()):
+                if global_best_feasible_package is not None:
+                    print('Both sub-searches found no infeasible packages; returning best feasible.')
+                    self.__metrics.end_execution(global_best_feasible_objective, no_of_scenarios)
+                    return (global_best_feasible_package, global_best_feasible_objective, False)
+                else:
+                    print('No feasible package found at convergence.')
+                    self.__metrics.end_execution(0, no_of_scenarios)
+                    if self.__early_termination:
+                        return (None, 0.0, False)
+
             for ind in range(len(cvar_upper_bounds)):
                 if cvar_upper_bounds[ind] <\
                     cvar_lower_bounds[ind]:
@@ -1544,8 +1930,10 @@ class SketchRCLSolve:
                 if min_no_of_scenarios_to_consider[ind] <\
                     max_no_of_scenarios_to_consider[ind]:
                     max_no_of_scenarios_to_consider[ind] -= 1
-            
+
         self.__metrics.end_execution(0, no_of_scenarios)
+        if self.__early_termination and global_best_feasible_package is None:
+            return (None, 0.0, False)
         return (None, 0.0, True)
     
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-For every GBM_Portfolio_YYYY relation (years 2017, 2019, 2022, 2023, 2025):
+For every GARCH_Portfolio_YYYY relation (years 2017, 2019, 2022, 2023, 2025):
 
   1. Solve Workloads/DemoWorkload/Q1.sql with SketchRefine.
      Print the chosen package (with full attribute values) and its BackTest gain.
@@ -19,6 +19,7 @@ Run from the project root or from DemoScripts:
 """
 import os
 import sys
+
 _SCRIPT_DIR   = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.dirname(_SCRIPT_DIR)
 sys.path.insert(0, _PROJECT_ROOT)
@@ -31,7 +32,10 @@ warnings.filterwarnings('ignore')
 import psycopg2
 
 from BackTest.BackTest import BackTest
+from CVaROptimizer.CVaROptimizerBaseline import CVaROptimizerBaseline
 from DbInfo.GBMPortfolioInfo import GBMPortfolioInfo
+from DbInfo.GarchPortfolioInfo import GarchPortfolioInfo
+from Hyperparameters.Hyperparameters import Hyperparameters
 from PgConnection.PgConnection import PgConnection
 from SketchRefine.SketchRefine import SketchRefine
 from StochasticPackageQuery.Constraints.ExpectedSumConstraint.ExpectedSumConstraint import ExpectedSumConstraint
@@ -40,7 +44,7 @@ from StochasticPackageQuery.Parser.Parser import Parser
 from StochasticPackageQuery.Query import Query
 
 SQL_PATH = os.path.join(_PROJECT_ROOT, 'Workloads', 'DemoWorkload', 'Q1.sql')
-YEARS    = [2022, 2023, 2024, 2025]
+YEARS    = range(2021, 2026)
 TIMEOUT  = 60 * 60   # seconds per solver call
 
 _INDEX_LABELS = {
@@ -153,7 +157,7 @@ def _solve_and_report(label: str, solver_fn, relation: str) -> dict:
     Print result, run BackTest, return summary dict.
     """
     print(f'\n  [{label}]')
-    package, obj_val = solver_fn()
+    package, obj_val, runtime = solver_fn()
 
     if package is None:
         print('    No feasible package found.')
@@ -186,7 +190,7 @@ def _solve_and_report(label: str, solver_fn, relation: str) -> dict:
     return {
         'label': label, 'relation': relation,
         'objective_value': obj_val,
-        'runtime': None,            # CVaROptimizerBaseline doesn't expose runtime
+        'runtime': runtime,
         'actual_gain': actual_gain,
         'dow_pct':          bench.get('dow_pct'),
         'sp500_pct':        bench.get('sp500_pct'),
@@ -209,7 +213,7 @@ def _run_one(base_query: Query, relation: str, db_info) -> list[dict]:
     # ------------------------------------------------------------------
     print('\n  [SketchRefine / Q1]')
     base_query.set_relation(relation)
-    solver  = SketchRefine(query=base_query, dbInfo=db_info, is_lp_relaxation=False)
+    solver  = SketchRefine(query=base_query, dbInfo=db_info, is_lp_relaxation=False, early_termination=True)
     package, _ = solver.solve()
     metric  = solver.get_metrics()
     obj_val = metric.get_objective_value()
@@ -258,17 +262,17 @@ def _run_one(base_query: Query, relation: str, db_info) -> list[dict]:
     # ------------------------------------------------------------------
     # Phase 2: Alternative CVaR query with threshold = 0.50 * O
     # ------------------------------------------------------------------
-    min_gain    = 0.50 * obj_val
+    min_gain    = min(0.50 * obj_val, obj_val - 20.0)
     cvar_query  = _build_cvar_query(base_query, relation, min_gain)
     print(f'\n  Building CVaR query with EXPECTED SUM(Gain) >= {min_gain:.4f}')
 
     # SketchRefine on CVaR query (L-CVaR)
     def _run_lcvar():
         q = copy.deepcopy(cvar_query)
-        solver = SketchRefine(query=q, dbInfo=db_info, is_lp_relaxation=False,
-                              optimize_lcvar=True)
+        solver = SketchRefine(query=q, dbInfo=db_info, is_lp_relaxation=False, optimize_lcvar=True, early_termination=True)
         pkg, _ = solver.solve()
-        return pkg, (solver.get_metrics().get_objective_value() if pkg is not None else 0.0)
+        runtime = solver.get_metrics().get_runtime()
+        return pkg, (solver.get_metrics().get_objective_value() if pkg is not None else 0.0), runtime
 
     lc = _solve_and_report('SketchRefine/CVaR(L-CVaR)', _run_lcvar, relation)
     lc['timed_out'] = False
@@ -331,40 +335,43 @@ def main():
 
     all_summaries = []   # flat list of result dicts
 
-    print('=' * 72)
-    print('  GBM_Portfolio')
-    print('=' * 72)
+    # Run both GBM and GARCH relations
+    for portfolio_type, db_info_class in [('GBM_Portfolio', GBMPortfolioInfo),
+                                           ('GARCH_Portfolio', GarchPortfolioInfo)]:
+        print('=' * 72)
+        print(f'  {portfolio_type}')
+        print('=' * 72)
 
-    for year in YEARS:
-        relation = f'GBM_Portfolio_{year}'
-        print(f'\n--- {relation} ---')
+        for year in YEARS:
+            relation = f'{portfolio_type}_{year}'
+            print(f'\n--- {relation} ---')
 
-        if not _relation_exists(relation):
-            print('  Relation not found — skipping.')
-            continue
+            if not _relation_exists(relation):
+                print('  Relation not found — skipping.')
+                continue
 
-        result_queue = multiprocessing.Queue()
-        process = multiprocessing.Process(
-            target=_run_one_worker,
-            args=(base_query, relation, GBMPortfolioInfo, result_queue)
-        )
-        process.start()
-        process.join(timeout=TIMEOUT)
+            result_queue = multiprocessing.Queue()
+            process = multiprocessing.Process(
+                target=_run_one_worker,
+                args=(base_query, relation, db_info_class, result_queue)
+            )
+            process.start()
+            process.join(timeout=TIMEOUT)
 
-        if process.is_alive():
-            process.terminate()
-            process.join()
-            print(f'  Timed out after {TIMEOUT}s — killed.')
-            all_summaries.append({
-                'label': 'ALL', 'relation': relation,
-                'objective_value': None, 'runtime': None,
-                'actual_gain': None, 'dow_pct': None, 'sp500_pct': None,
-                'package_size': 0, 'timed_out': True,
-            })
-        else:
-            for r in result_queue.get():
-                r.setdefault('timed_out', False)
-                all_summaries.append(r)
+            if process.is_alive():
+                process.terminate()
+                process.join()
+                print(f'  Timed out after {TIMEOUT}s — killed.')
+                all_summaries.append({
+                    'label': 'ALL', 'relation': relation,
+                    'objective_value': None, 'runtime': None,
+                    'actual_gain': None, 'dow_pct': None, 'sp500_pct': None,
+                    'package_size': 0, 'timed_out': True,
+                })
+            else:
+                for r in result_queue.get():
+                    r.setdefault('timed_out', False)
+                    all_summaries.append(r)
 
     # ------------------------------------------------------------------
     # Summary table

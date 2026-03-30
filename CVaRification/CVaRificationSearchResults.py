@@ -10,6 +10,7 @@ class CVaRificationSearchResults:
         self.__validation_objective_value = 0.0
         self.__best_feasible_package = None
         self.__best_feasible_objective = None
+        self.__found_non_none_infeasible = False
 
     def get_needs_more_scenarios(self):
         return self.__needs_more_scenarios
@@ -78,3 +79,9 @@ class CVaRificationSearchResults:
 
     def set_best_feasible_objective(self, objective):
         self.__best_feasible_objective = objective
+
+    def get_found_non_none_infeasible(self):
+        return self.__found_non_none_infeasible
+
+    def set_found_non_none_infeasible(self, value):
+        self.__found_non_none_infeasible = value

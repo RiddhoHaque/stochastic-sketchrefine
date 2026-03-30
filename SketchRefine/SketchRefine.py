@@ -20,7 +20,8 @@ class SketchRefine:
         check_feasibility: bool = False,
         optimize_lcvar: bool = False,
         prepare_for_alternative_packages: bool = False,
-        gurobi_env = None
+        gurobi_env = None,
+        early_termination: bool = False
     ):
         self.__partition_sizes = []
         self.__max_no_of_duplicates = []
@@ -30,6 +31,7 @@ class SketchRefine:
         self.__check_feasibility = check_feasibility
         self.__optimize_lcvar = optimize_lcvar
         self.__prepare_for_alternative_packages = prepare_for_alternative_packages
+        self.__early_termination = early_termination
         if gurobi_env is None:
             self.__gurobi_env = gp.Env(params=GurobiLicense.OPTIONS)
             self.__gurobi_env.setParam('OutputFlag', 0)
@@ -74,7 +76,8 @@ class SketchRefine:
                     Hyperparameters.MAX_OPT_SCENARIOS_IN_PRACTICE,
                 check_feasibility=self.__check_feasibility,
                 optimize_lcvar=self.__optimize_lcvar,
-                gurobi_env=self.__gurobi_env
+                gurobi_env=self.__gurobi_env,
+                early_termination=self.__early_termination
             )
             result = rclsolver.solve()
             m = rclsolver.get_metrics()
@@ -82,11 +85,11 @@ class SketchRefine:
                 m.get_optimizer_runtime(),
                 m.get_number_of_optimization_calls()
             )
-            if result is None:
+            if result is None or result[0] is None:
                 self.__metrics.end_execution(0.0, 0)
                 return None, 0.0
             self.__metrics.end_execution(result[1], 0)
-            return result
+            return result[0], result[1]
         
         print('Initiating Sketch')
         sketch = Sketch(
@@ -97,7 +100,8 @@ class SketchRefine:
             is_lp_relaxation=self.__is_lp_relaxation,
             check_feasibility=self.__check_feasibility,
             optimize_lcvar=self.__optimize_lcvar,
-            gurobi_env=self.__gurobi_env
+            gurobi_env=self.__gurobi_env,
+            early_termination=self.__early_termination
         )
         print('Sketch Initialized')
 
@@ -198,7 +202,8 @@ class SketchRefine:
             self.__is_lp_relaxation,
             self.__check_feasibility,
             self.__optimize_lcvar,
-            self.__gurobi_env
+            self.__gurobi_env,
+            self.__early_termination
         )
         result = refine.solve()
         self.__metrics.add_optimizer_metrics(

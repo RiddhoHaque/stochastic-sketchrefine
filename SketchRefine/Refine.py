@@ -27,10 +27,12 @@ class Refine:
         linear_relaxation: bool,
         check_feasibility: bool = False,
         optimize_lcvar: bool = False,
-        gurobi_env = None
+        gurobi_env = None,
+        early_termination: bool = False
     ):
 
         self.__partition_groups = partition_groups
+        self.__early_termination = early_termination
         self.__no_of_optimization_scenarios =\
             no_of_optimization_scenarios
         self.__no_of_validation_scenarios =\
@@ -512,7 +514,8 @@ class Refine:
                 self.__sketch_objective_value,
             check_feasibility=self.__check_feasibility,
             optimize_lcvar=self.__optimize_lcvar,
-            gurobi_env=self.__gurobi_env
+            gurobi_env=self.__gurobi_env,
+            early_termination=self.__early_termination
         )
 
         refined_package, objective_value,\

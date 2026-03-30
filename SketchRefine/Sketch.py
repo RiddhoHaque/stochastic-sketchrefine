@@ -22,12 +22,14 @@ class Sketch:
         is_lp_relaxation = False,
         check_feasibility: bool = False,
         optimize_lcvar: bool = False,
-        gurobi_env = None
+        gurobi_env = None,
+        early_termination: bool = False
     ):
         self.__query = query
         self.__dbInfo = dbInfo
         self.__no_of_opt_scenarios = \
             no_of_opt_scenarios
+        self.__early_termination = early_termination
         self.__partition_ids = \
             self.__get_partition_ids()
         self.__max_no_of_duplicates,\
@@ -128,7 +130,8 @@ class Sketch:
             partition_id_for_each_index=self.__partition_id_in_duplicate_vector,
             check_feasibility=check_feasibility,
             optimize_lcvar=optimize_lcvar,
-            gurobi_env=self.__gurobi_env
+            gurobi_env=self.__gurobi_env,
+            early_termination=self.__early_termination
         )
         print('Sketch Initialized')
 

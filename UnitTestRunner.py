@@ -6,6 +6,7 @@ from ScenarioGenerator.TpchScenarioGenerators.PriceScenarioGeneratorUnitTest imp
 from ScenarioGenerator.TpchScenarioGenerators.QuantityScenarioGeneratorUnitTest import QuantityScenarioGeneratorUnitTest
 from ScenarioGenerator.PorfolioScenarioGenerator.GainScenarioGeneratorUnitTest import GainScenarioGeneratorUnitTest
 from ScenarioGenerator.PorfolioScenarioGenerator.GBMGARCHScenarioGeneratorUnitTest import GBMGARCHScenarioGeneratorUnitTest
+from CVaRification.RCLSolveUnitTest import RCLSolveUnitTest
 from StochasticPackageQuery.Constraints.ConstraintUnitTest import ConstraintUnitTest
 from StochasticPackageQuery.Constraints.RepeatConstraint.RepeatConstraintUnitTest import RepeatConstraintUnitTest
 from StochasticPackageQuery.Constraints.PackageSizeConstraint.PackageSizeConstraintUnitTest import PackageSizeConstraintUnitTest
@@ -46,6 +47,7 @@ def UnitTestRunner():
     ValueGeneratorUnitTest().main()
     MeanAbsoluteDistanceUnitTest().main()
     PivotScanUnitTest().main()
+    RCLSolveUnitTest().main()
     HeapUnitTest().main()
     print('All unit tests passed')
 

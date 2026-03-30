@@ -1,0 +1,36 @@
+Query:
+
+SELECT Package(*)
+FROM GBM_Portfolio_2025 REPEAT 4
+WHERE SELL_AFTER <= 10 AND PRICE >= 1.0
+SUCH THAT
+    COUNT(*) >= 1 AND
+    SUM(Price) <= 5000 AND
+    EXPECTED SUM(Gain) >= -350 IN LOWER 0.1 TAIL
+MAXIMIZE EXPECTED SUM(Gain)
+
+
+Relation                        Solver                           Obj Value    Runtime(s)   Pkg Size     Actual Gain      DOW Profit   S&P500 Profit   NASDAQ Profit  Russell2000 Profit
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+GBM_Portfolio_2015              SketchRefine/Q1                    44.2779        50.054          6         -0.7505          9.1034          7.9824          9.4691          3.5748
+GBM_Portfolio_2015              SketchRefine/CVaR(L-CVaR)              N/A           N/A          0             N/A             N/A             N/A             N/A             N/A
+GBM_Portfolio_2016              SketchRefine/Q1                    22.3291        52.621         28        106.7143         67.6758         59.8736         73.5636         89.8697
+GBM_Portfolio_2016              SketchRefine/CVaR(L-CVaR)              N/A           N/A          0             N/A             N/A             N/A             N/A             N/A
+GBM_Portfolio_2017              SketchRefine/Q1                    24.8055        55.337         35         73.4275          9.7334         17.2368         46.4793          4.7920
+GBM_Portfolio_2017              SketchRefine/CVaR(L-CVaR)              N/A           N/A          0             N/A             N/A             N/A             N/A             N/A
+GBM_Portfolio_2018              SketchRefine/Q1                    23.1072        76.689         23        209.8885         42.2957         35.7136         42.7072         19.2378
+GBM_Portfolio_2018              SketchRefine/CVaR(L-CVaR)              N/A           N/A          0             N/A             N/A             N/A             N/A             N/A
+GBM_Portfolio_2019              SketchRefine/Q1                    21.6046        52.196         13        107.8559         28.2775         19.8456         24.3034         -3.5697
+GBM_Portfolio_2019              SketchRefine/CVaR(L-CVaR)              N/A           N/A          0             N/A             N/A             N/A             N/A             N/A
+GBM_Portfolio_2020              SketchRefine/Q1                    20.3468        55.865         13         63.4900         66.1759         53.3025         58.4866         53.5660
+GBM_Portfolio_2020              SketchRefine/CVaR(L-CVaR)              N/A           N/A          0             N/A             N/A             N/A             N/A             N/A
+GBM_Portfolio_2021              SketchRefine/Q1                    25.7234       103.151         15        -34.9425         16.0940         14.6333          2.2530        -94.1421
+GBM_Portfolio_2021              SketchRefine/CVaR(L-CVaR)              N/A           N/A          0             N/A             N/A             N/A             N/A             N/A
+GBM_Portfolio_2022              SketchRefine/Q1                    77.2116        33.465         97        323.6700         30.7099         49.4461        145.8358         48.0676
+GBM_Portfolio_2022              SketchRefine/CVaR(L-CVaR)              N/A           N/A          0             N/A             N/A             N/A             N/A             N/A
+GBM_Portfolio_2023              SketchRefine/Q1                    18.0895        69.667         21         17.9729          7.0759         22.0104         45.2255         41.9240
+GBM_Portfolio_2023              SketchRefine/CVaR(L-CVaR)          -0.0171        19.701          1          0.0078          0.0000          0.0000          0.0000          0.0000
+GBM_Portfolio_2024              SketchRefine/Q1                    65.3925        54.767        136        258.9727        133.0337        142.5790        165.9055        386.5537
+GBM_Portfolio_2024              SketchRefine/CVaR(L-CVaR)              N/A           N/A          0             N/A             N/A             N/A             N/A             N/A
+GBM_Portfolio_2025              SketchRefine/Q1                   160.9977        92.348         16        -34.0635        -10.2590          7.1439         22.7505          3.3075
+GBM_Portfolio_2025              SketchRefine/CVaR(L-CVaR)         -85.4437        10.031          5          0.0000         -1.1175          0.7781          2.4781          0.3603
