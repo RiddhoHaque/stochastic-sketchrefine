@@ -1478,15 +1478,10 @@ class RefineRCLSolve:
                         probabilistically_unconstrained_package,
                         constraint.get_attribute_name()
                     )
-                if constraint.get_inequality_sign() == \
-                        RelationalOperators.LESS_THAN_OR_EQUAL_TO:
-                    cvar_lower_bounds.append(
-                        min(expected_sum, constraint.get_sum_limit()))
-                    cvar_upper_bounds.append(constraint.get_sum_limit())
-                else:
-                    cvar_lower_bounds.append(constraint.get_sum_limit())
-                    cvar_upper_bounds.append(
-                        max(expected_sum, constraint.get_sum_limit()))
+                
+                cvar_upper_bounds.append(expected_sum)
+                cvar_lower_bounds.append(constraint.get_sum_limit())
+                
                 min_no_of_scenarios_to_consider.append(1)
                 max_no_of_scenarios_to_consider.append(1)
                 stochastic_constraint_index += 1
@@ -1498,23 +1493,10 @@ class RefineRCLSolve:
                         probabilistically_unconstrained_package,
                         constraint, no_of_scenarios
                     )
-                if constraint.get_inequality_sign() == \
-                        RelationalOperators.GREATER_THAN_OR_EQUAL_TO:
-                    cvar_upper_bounds.append(
-                        max(cvar_threshold, constraint.get_sum_limit()))
-                else:
-                    cvar_upper_bounds.append(cvar_threshold)
-                expected_sum = \
-                    self.__get_expected_sum_among_optimization_scenarios(
-                        probabilistically_unconstrained_package,
-                        constraint.get_attribute_name()
-                    )
-                if constraint.get_inequality_sign() == \
-                        RelationalOperators.LESS_THAN_OR_EQUAL_TO:
-                    cvar_lower_bounds.append(
-                        min(expected_sum, constraint.get_sum_limit()))
-                else:
-                    cvar_lower_bounds.append(expected_sum)
+                
+                cvar_upper_bounds.append(cvar_threshold)
+                cvar_lower_bounds.append(expected_sum)
+                
                 no_of_scenarios_to_consider = \
                     max(1, int(np.floor(constraint.get_percentage_of_scenarios()\
                              *no_of_scenarios/100.0)))
@@ -1626,7 +1608,7 @@ class RefineRCLSolve:
                 cvar_lower_bounds=cvar_lower_bounds,
                 trivial_constraints=trivial_constraints,
                 no_of_scenarios_to_consider=\
-                    min_no_of_scenarios_to_consider,
+                    max_no_of_scenarios_to_consider,
                 can_add_scenarios=can_add_scenarios
             )
 

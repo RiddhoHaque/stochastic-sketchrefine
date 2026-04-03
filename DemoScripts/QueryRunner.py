@@ -19,6 +19,7 @@ Run from the project root or from DemoScripts:
 """
 import os
 import sys
+import time
 
 _SCRIPT_DIR   = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.dirname(_SCRIPT_DIR)
@@ -258,7 +259,6 @@ def _run_one(base_query: Query, relation: str, db_info) -> list[dict]:
             print(f'    {label_str} profit (same window, same investment): N/A')
     results.append(sr_result)
 
-    '''
     # ------------------------------------------------------------------
     # Phase 2: Alternative CVaR query with threshold = 0.50 * O
     # ------------------------------------------------------------------
@@ -270,14 +270,16 @@ def _run_one(base_query: Query, relation: str, db_info) -> list[dict]:
     def _run_lcvar():
         q = copy.deepcopy(cvar_query)
         solver = SketchRefine(query=q, dbInfo=db_info, is_lp_relaxation=False, optimize_lcvar=True, early_termination=True)
+        #start_time = time.time()
+        #solver = CVaROptimizerBaseline(query=q, dbInfo=db_info, num_val_scenarios=Hyperparameters.NO_OF_VALIDATION_SCENARIOS)
         pkg, _ = solver.solve()
         runtime = solver.get_metrics().get_runtime()
+        #runtime = time.time() - start_time
         return pkg, (solver.get_metrics().get_objective_value() if pkg is not None else 0.0), runtime
 
     lc = _solve_and_report('SketchRefine/CVaR(L-CVaR)', _run_lcvar, relation)
     lc['timed_out'] = False
     results.append(lc)
-    '''
     return results
 
 

@@ -690,6 +690,8 @@ class RCLSolve:
                         if constraint.is_cvar_constraint():
                             cvarified_constraint = \
                                 constraint
+                            cvarified_constraint.set_sum_limit(
+                                cvar_thresholds[stochastic_constraint_index])
                         else:
                             cvarified_constraint = \
                                 self.__get_cvarified_constraint(
@@ -1921,10 +1923,10 @@ class RCLSolve:
         self.__add_all_scenarios_if_possible(
             no_of_scenarios)
         stochastic_constraint_index = 0
-        cvar_lower_bounds = []
-        cvar_upper_bounds = []
-        min_no_of_scenarios_to_consider = []
-        max_no_of_scenarios_to_consider = []
+        cvar_lower_bounds = [] # Points towards validation-feasibility
+        cvar_upper_bounds = [] # Points towards validation-infeasibility
+        min_no_of_scenarios_to_consider = [] # Points towards validation-infeasibility
+        max_no_of_scenarios_to_consider = [] # Points towards validation-feasibility
         trivial_constraints = []
         for constraint in self.__get_searchable_constraints():
             is_satisfied = False
@@ -1979,20 +1981,11 @@ class RCLSolve:
                     self.__get_expected_sum_among_optimization_scenarios(
                         probabilistically_unconstrained_package,
                         constraint.get_attribute_name()
-                    )
-                if constraint.get_inequality_sign() == \
-                        RelationalOperators.LESS_THAN_OR_EQUAL_TO:
-                    cvar_lower_bounds.append(
-                        min(expected_sum, constraint.get_sum_limit())
-                    )
-                    cvar_upper_bounds.append(constraint.get_sum_limit())
-                else:
-                    cvar_lower_bounds.append(constraint.get_sum_limit())
-                    cvar_upper_bounds.append(
-                        max(expected_sum, constraint.get_sum_limit())
-                    )
-                min_no_of_scenarios_to_consider.append(1)
-                max_no_of_scenarios_to_consider.append(1)
+                    ) - 2*self.__bisection_threshold
+                cvar_upper_bounds.append(expected_sum)
+                cvar_lower_bounds.append(constraint.get_sum_limit())
+                min_no_of_scenarios_to_consider.append(no_of_scenarios)
+                max_no_of_scenarios_to_consider.append(no_of_scenarios)
                 stochastic_constraint_index += 1
                 continue
 
@@ -2001,34 +1994,28 @@ class RCLSolve:
                     self.__get_linearized_cvar_among_optimization_scenarios(
                         probabilistically_unconstrained_package,
                         constraint, no_of_scenarios
-                    )
-                if constraint.get_inequality_sign() == \
-                        RelationalOperators.GREATER_THAN_OR_EQUAL_TO:
-                    cvar_upper_bounds.append(
-                        max(cvar_threshold, constraint.get_sum_limit()))
-                else:
-                    cvar_upper_bounds.append(cvar_threshold)
+                    ) - 2*self.__bisection_threshold
+                cvar_upper_bounds.append(cvar_threshold)
                 expected_sum = \
                     self.__get_expected_sum_among_optimization_scenarios(
                         probabilistically_unconstrained_package,
                         constraint.get_attribute_name()
                     )
-                if constraint.get_inequality_sign() == \
-                        RelationalOperators.LESS_THAN_OR_EQUAL_TO:
-                    cvar_lower_bounds.append(
-                        min(expected_sum, constraint.get_sum_limit()))
-                else:
-                    cvar_lower_bounds.append(expected_sum)
+                cvar_lower_bounds.append(expected_sum)
+                
                 no_of_scenarios_to_consider =\
                     max(1, int(np.floor(
                         constraint.get_percentage_of_scenarios()\
                          *no_of_scenarios/100.0)))
+                
                 min_no_of_scenarios_to_consider.append(
                     no_of_scenarios_to_consider
                 )
+                
                 max_no_of_scenarios_to_consider.append(
                     no_of_scenarios
                 )
+            
             else:
                 cvarified_constraint = \
                     self.__get_cvarified_constraint(
@@ -2038,7 +2025,7 @@ class RCLSolve:
                     self.__get_linearized_cvar_among_optimization_scenarios(
                         probabilistically_unconstrained_package,
                         cvarified_constraint, no_of_scenarios
-                    )
+                    ) - 2*self.__bisection_threshold
                 cvar_upper_bounds.append(cvar_threshold)
                 cvar_lower_bounds.append(
                     self.__get_expected_sum_among_optimization_scenarios(
@@ -2149,7 +2136,7 @@ class RCLSolve:
                     cvar_lower_bounds=cvar_lower_bounds,
                     trivial_constraints=trivial_constraints,
                     no_of_scenarios_to_consider=\
-                        min_no_of_scenarios_to_consider,
+                        max_no_of_scenarios_to_consider,
                     can_add_scenarios=can_add_scenarios
                 )
 
