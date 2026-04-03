@@ -1,16 +1,9 @@
 Relation                        Solver                           Obj Value    Runtime(s)   Pkg Size     Actual Gain      DOW Profit   S&P500 Profit   NASDAQ Profit  Russell2000 Profit
 ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-GBM_Portfolio_2021              SketchRefine/Q1                     0.0000        70.029          0             N/A             N/A             N/A             N/A             N/A
-GBM_Portfolio_2022              SketchRefine/Q1                    77.1731        50.355         96        327.2000         30.7100         49.4464        145.8367         48.0679
-GBM_Portfolio_2022              SketchRefine/CVaR(L-CVaR)        -256.6068        79.738         43         94.8886         30.7097         49.4458        145.8348         48.0673
-GBM_Portfolio_2023              SketchRefine/Q1                    70.9402        35.268         76        -57.8462         24.2428         75.4098        154.9470        143.6357
-GBM_Portfolio_2023              SketchRefine/CVaR(L-CVaR)        -523.3151        39.215         37        310.0738         24.2416         75.4062        154.9395        143.6287
-GBM_Portfolio_2024              SketchRefine/Q1                    65.4182        39.219        131        191.8727        133.0356        142.5810        165.9078        386.5591
-GBM_Portfolio_2024              SketchRefine/CVaR(L-CVaR)        -450.7102        47.566         71        354.4461        133.0368        142.5822        165.9093        386.5625
-GBM_Portfolio_2025              SketchRefine/Q1                     0.0000        77.234          0             N/A             N/A             N/A             N/A             N/A
-GARCH_Portfolio_2021            SketchRefine/Q1                     0.0000       111.004          0             N/A             N/A             N/A             N/A             N/A
-GARCH_Portfolio_2022            SketchRefine/Q1                     0.0000       110.111          0             N/A             N/A             N/A             N/A             N/A
-GARCH_Portfolio_2023            SketchRefine/Q1               312457959697015216193845952149675039484595856525904274023928481251340582912.0000        76.347         75        190.4250         24.2417         75.4064        154.9400        143.6292
-GARCH_Portfolio_2023            SketchRefine/CVaR(L-CVaR)              N/A           N/A          0             N/A             N/A             N/A             N/A             N/A
-GARCH_Portfolio_2024            SketchRefine/Q1                     0.0000       111.984          0             N/A             N/A             N/A             N/A             N/A
-GARCH_Portfolio_2025            SketchRefine/Q1                     0.0000       128.462          0             N/A             N/A             N/A             N/A             N/A
+GARCH_Portfolio_2021            SketchRefine/Q1                     0.0000       101.694          0             N/A             N/A             N/A             N/A             N/A
+GARCH_Portfolio_2022            SketchRefine/Q1                   179.5439        75.747         41        -61.7422         30.7089         49.4446        145.8313         48.0661
+GARCH_Portfolio_2022            SketchRefine/CVaR(L-CVaR)        -123.9990       121.067         29         70.4999         16.0404         25.8268         76.1733         25.1068
+GARCH_Portfolio_2023            SketchRefine/Q1                   149.5715        79.623         58        214.5091         24.2417         75.4065        154.9401        143.6293
+GARCH_Portfolio_2023            SketchRefine/CVaR(L-CVaR)        -206.6040       166.613         26        260.7900         14.2918         44.4562         91.3455         84.6772
+GARCH_Portfolio_2024            SketchRefine/Q1                     0.0000       121.422          0             N/A             N/A             N/A             N/A             N/A
+GARCH_Portfolio_2025            SketchRefine/Q1                     0.0000       144.175          0             N/A             N/A             N/A             N/A             N/A

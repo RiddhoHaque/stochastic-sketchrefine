@@ -33,21 +33,31 @@ def _process_ticker(ticker, param_group, residuals, seed, no_of_scenarios):
     n_res = len(residuals)
     gains_by_idx: dict[int, list[float]] = {}
 
+    # Cap h at 50x the unconditional variance to prevent GARCH variance explosion
+    # when extreme residuals are drawn consecutively during bootstrapping.
+    persistence = alpha1 + beta1
+    if persistence < 1.0:
+        unconditional_var = omega / (1.0 - persistence)
+    else:
+        unconditional_var = max(last_h, 1e-10)  # fallback for non-stationary params
+    max_h = 10.0 * unconditional_var
+
     # Generate all residual indices for all scenarios at once: shape (S, T)
     z_indices = rng.integers(0, n_res, size=(no_of_scenarios, max_steps))
     z_mat     = residuals[z_indices]   # (S, T) — fancy index into residuals array
 
     # Vectorized GARCH simulation across S scenarios simultaneously
-    h           = np.full(no_of_scenarios, last_h,  dtype=np.float64)  # (S,)
+    h           = np.full(no_of_scenarios, np.clip(last_h, 1e-10, max_h), dtype=np.float64)  # (S,)
     cum_log_ret = np.zeros(no_of_scenarios,          dtype=np.float64)  # (S,)
 
     step = 0
     for date in sorted_dates:
         while step < date:
             z_col        = z_mat[:, step]                       # (S,)
-            r_t          = z_col * np.sqrt(h)                   # (S,)
+            r_t          = z_col * np.sqrt(h)                   # (S,) in % units
             h            = omega + alpha1 * r_t ** 2 + beta1 * h  # (S,)
-            cum_log_ret += r_t                                   # (S,)
+            h            = np.clip(h, 1e-10, max_h)             # prevent variance explosion
+            cum_log_ret += r_t                                   # (S,) decimal log-return
             step        += 1
 
         gains    = price * (np.exp(cum_log_ret) - 1.0)  # (S,)
@@ -91,7 +101,10 @@ class GARCHFHSGainScenarioGenerator(ScenarioGenerator):
         residuals: dict[str, list[float]] = {}
         for ticker, z in rows:
             residuals.setdefault(ticker, []).append(z)
-        return {t: np.array(zs, dtype=np.float64) for t, zs in residuals.items()}
+        # Winsorize at ±3σ: p99 is ~±2.7, so ±3 preserves genuine fat tails
+        # while discarding artefact outliers (halts, bad prices).
+        return {t: np.clip(np.array(zs, dtype=np.float64), -3.0, 3.0)
+                for t, zs in residuals.items()}
 
     def generate_scenarios(self, seed: int, no_of_scenarios: int) -> list[list[float]]:
         param_rows = self.__get_params()
@@ -128,13 +141,19 @@ class GARCHFHSGainScenarioGenerator(ScenarioGenerator):
         self, seed: int, no_of_scenarios: int,
         partition_id: int
     ) -> list[list[float]]:
-        self.__relation = self.__relation + \
-            ' AS r INNER JOIN ' + \
-            Relation_Prefixes.PARTITION_RELATION_PREFIX + \
+        relation = (
+            self.__relation + ' AS r INNER JOIN ' +
+            Relation_Prefixes.PARTITION_RELATION_PREFIX +
             self.__relation + ' AS p ON r.id=p.tuple_id'
+        )
+        predicate = (
+            (self.__base_predicate + ' AND ' if self.__base_predicate != '1=1' else '') +
+            'p.partition_id = ' + str(partition_id)
+        )
 
-        if len(self.__base_predicate) > 0:
-            self.__base_predicate += ' AND '
-        self.__base_predicate += 'p.partition_id = ' + str(partition_id)
-
-        return self.generate_scenarios(seed, no_of_scenarios)
+        orig_relation, orig_predicate = self.__relation, self.__base_predicate
+        self.__relation, self.__base_predicate = relation, predicate
+        try:
+            return self.generate_scenarios(seed, no_of_scenarios)
+        finally:
+            self.__relation, self.__base_predicate = orig_relation, orig_predicate

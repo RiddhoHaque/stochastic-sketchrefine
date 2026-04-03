@@ -338,7 +338,7 @@ def main():
     all_summaries = []   # flat list of result dicts
 
     # Run both GBM and GARCH relations
-    for portfolio_type, db_info_class in [('GBM_Portfolio', GBMPortfolioInfo),
+    for portfolio_type, db_info_class in [#('GBM_Portfolio', GBMPortfolioInfo),
                                            ('GARCH_Portfolio', GarchPortfolioInfo)]:
         print('=' * 72)
         print(f'  {portfolio_type}')
