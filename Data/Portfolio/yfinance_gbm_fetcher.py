@@ -97,6 +97,67 @@ def _fit_gbm(log_returns: np.ndarray):
 
 
 # ---------------------------------------------------------------------------
+# Raw-close cache helpers
+# ---------------------------------------------------------------------------
+
+def _ensure_raw_close_tables(cursor):
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS RawClose (
+            ticker varchar(10)      NOT NULL,
+            date   date             NOT NULL,
+            close  double precision NOT NULL,
+            PRIMARY KEY (ticker, date)
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS RawCloseDownloaded (
+            ticker varchar(10) NOT NULL PRIMARY KEY
+        )
+    """)
+
+
+def _is_ticker_downloaded(cursor, ticker: str) -> bool:
+    cursor.execute("SELECT 1 FROM RawCloseDownloaded WHERE ticker=%s", (ticker,))
+    return cursor.fetchone() is not None
+
+
+def _load_closes_from_cache(cursor, ticker: str) -> pd.Series:
+    cursor.execute(
+        "SELECT date, close FROM RawClose WHERE ticker=%s ORDER BY date",
+        (ticker,),
+    )
+    rows = cursor.fetchall()
+    if not rows:
+        return pd.Series(dtype=float)
+    dates, closes = zip(*rows)
+    return pd.Series(list(closes), index=pd.to_datetime(dates))
+
+
+def _cache_closes(cursor, ticker: str, closes_full: pd.Series):
+    rows = [(ticker, d.date(), float(v)) for d, v in closes_full.items()]
+    if rows:
+        psycopg2.extras.execute_values(
+            cursor,
+            "INSERT INTO RawClose (ticker, date, close) VALUES %s "
+            "ON CONFLICT (ticker, date) DO NOTHING",
+            rows,
+        )
+    cursor.execute(
+        "INSERT INTO RawCloseDownloaded (ticker) VALUES (%s) ON CONFLICT DO NOTHING",
+        (ticker,),
+    )
+
+
+def _remove_ticker_from_directories(ticker: str):
+    base = os.path.dirname(__file__)
+    for rel_dir in _STOCK_DATA_DIRS:
+        path = os.path.join(base, rel_dir, f'{ticker}.csv')
+        if os.path.isfile(path):
+            os.remove(path)
+            print(f'  Removed {path}')
+
+
+# ---------------------------------------------------------------------------
 # ActualClose helpers
 # ---------------------------------------------------------------------------
 
@@ -206,27 +267,43 @@ def main():
     conn   = _connect()
     cursor = conn.cursor()
     _ensure_actual_close_tables(cursor)
+    _ensure_raw_close_tables(cursor)
     conn.commit()
 
     row_ids = {year: 0 for year in CUTOFF_YEARS}
 
     for i, ticker in enumerate(tickers):
         try:
-            raw = yf.download(
-                ticker,
-                start=HISTORY_START,
-                end=global_end_str,
-                progress=False,
-                auto_adjust=True,
-                actions=False,
-            )
-            if raw.empty:
-                continue
+            if _is_ticker_downloaded(cursor, ticker):
+                closes_full = _load_closes_from_cache(cursor, ticker)
+                if closes_full.empty:
+                    continue
+            else:
+                try:
+                    raw = yf.download(
+                        ticker,
+                        start=HISTORY_START,
+                        end=global_end_str,
+                        progress=False,
+                        auto_adjust=True,
+                        actions=False,
+                    )
+                except Exception as e:
+                    print(f'  Download failed for {ticker}: {e}')
+                    _remove_ticker_from_directories(ticker)
+                    continue
 
-            closes_full = raw['Close'].squeeze().dropna()
-            if closes_full.index.tz is not None:
-                closes_full.index = closes_full.index.tz_convert(None)
-            closes_full.index = closes_full.index.normalize()
+                if raw.empty:
+                    _remove_ticker_from_directories(ticker)
+                    continue
+
+                closes_full = raw['Close'].squeeze().dropna()
+                if closes_full.index.tz is not None:
+                    closes_full.index = closes_full.index.tz_convert(None)
+                closes_full.index = closes_full.index.normalize()
+
+                _cache_closes(cursor, ticker, closes_full)
+                conn.commit()
 
             for year in CUTOFF_YEARS:
                 saved_id = row_ids[year]

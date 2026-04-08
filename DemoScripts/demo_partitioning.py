@@ -51,13 +51,13 @@ def main():
     print(f"SIZE_THRESHOLD        = {SIZE_THRESHOLD}")
     print(f"PARTITION_COUNT_LIMIT = {PARTITION_COUNT_LIMIT} (80% of SIZE_THRESHOLD)")
 
-    #gbm_relations   = get_qualifying_relations('GBM_Portfolio')
+    gbm_relations   = get_qualifying_relations('GBM_Portfolio')
     garch_relations = get_qualifying_relations('GARCH_Portfolio')
 
-    #print(f"\nGBM relations above SIZE_THRESHOLD:   {[r for r, _ in gbm_relations]}")
+    print(f"\nGBM relations above SIZE_THRESHOLD:   {[r for r, _ in gbm_relations]}")
     print(f"GARCH relations above SIZE_THRESHOLD: {[r for r, _ in garch_relations]}")
 
-    #process_relations(gbm_relations,   GBMPortfolioInfo)
+    process_relations(gbm_relations,   GBMPortfolioInfo)
     process_relations(garch_relations, GarchPortfolioInfo)
 
 
