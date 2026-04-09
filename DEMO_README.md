@@ -79,14 +79,14 @@ data already cached.
 
 ## Step 2 - Partition the portfolio relations
 
-From the project root:
+From the project root, run **only** the following command (passing the year `2025`):
 
 ```bash
-python DemoScripts/demo_partitioning.py
+python DemoScripts/demo_partitioning.py 2025
 ```
 
-This partitions any `GBM_Portfolio_YYYY` and `GARCH_Portfolio_YYYY` tables that
-exceed `Hyperparameters.SIZE_THRESHOLD` rows, using pre-configured gain and
+This partitions the `GBM_Portfolio_2025` and `GARCH_Portfolio_2025` tables if
+they exceed `Hyperparameters.SIZE_THRESHOLD` rows, using pre-configured gain and
 price diameter thresholds. Tables below the threshold are left untouched.
 
 Console output looks like:
@@ -95,8 +95,8 @@ Console output looks like:
 SIZE_THRESHOLD        = <N>
 PARTITION_COUNT_LIMIT = <0.8 * N>
 
-GBM relations above SIZE_THRESHOLD:   ['GBM_Portfolio_2015', ...]
-GARCH relations above SIZE_THRESHOLD: ['GARCH_Portfolio_2015', ...]
+GBM relations above SIZE_THRESHOLD:   ['GBM_Portfolio_2025', ...]
+GARCH relations above SIZE_THRESHOLD: ['GARCH_Portfolio_2025', ...]
 ```
 
 Followed by per-relation partitioning metrics.
