@@ -2,6 +2,18 @@ import gurobipy as gp
 from gurobipy import GRB
 import numpy as np
 import psutil
+
+
+def _make_constr(lhs, sense, rhs):
+    """Build a Gurobi TempConstr from (lhs, sense, rhs).
+
+    Gurobi 11+ removed the positional addConstr(lhs, sense, rhs) form.
+    """
+    if sense == GRB.LESS_EQUAL:
+        return lhs <= rhs
+    if sense == GRB.GREATER_EQUAL:
+        return lhs >= rhs
+    return lhs == rhs
 from scipy import optimize
 
 from DbInfo.DbInfo import DbInfo
@@ -168,10 +180,10 @@ class SummarySearch:
         elif inequality_sign == RelationalOperators.GREATER_THAN_OR_EQUAL_TO:
             gurobi_inequality = GRB.GREATER_EQUAL
         
-        self.__model.addConstr(
+        self.__model.addConstr(_make_constr(
             gp.LinExpr([1]*self.__no_of_vars, self.__vars),
             gurobi_inequality, size_limit
-        )
+        ))
 
     
     def __add_deterministic_constraint_to_model(
@@ -187,10 +199,10 @@ class SummarySearch:
             gurobi_inequality = GRB.GREATER_EQUAL
         
         sum_limit = deterministic_constraint.get_sum_limit()
-        self.__model.addConstr(
+        self.__model.addConstr(_make_constr(
             gp.LinExpr(self.__values[attribute], self.__vars),
             gurobi_inequality, sum_limit
-        )
+        ))
 
     
     def __add_expected_sum_constraint_to_model(
@@ -238,11 +250,11 @@ class SummarySearch:
         
         sum_limit = expected_sum_constraint.get_sum_limit()
 
-        self.__model.addConstr(
+        self.__model.addConstr(_make_constr(
             gp.LinExpr(coefficients, self.__vars),
             gurobi_inequality, sum_limit
-        )
-    
+        ))
+
 
     def __add_summaries_to_model(
         self, var_constraint,
@@ -320,11 +332,11 @@ class SummarySearch:
                 no_of_summaries, alpha, previous_package
             )
         #print('Sum of indicators >=', len(indicators) * var_constraint.get_probability_threshold())
-        self.__model.addConstr(
+        self.__model.addConstr(_make_constr(
             gp.LinExpr([1]*len(indicators), indicators),
             GRB.GREATER_EQUAL,
             len(indicators) * var_constraint.get_probability_threshold()
-        )
+        ))
 
 
     def __create_summary(self, scenarios: list[int],
@@ -491,10 +503,10 @@ class SummarySearch:
                     gurobi_inequality = GRB.LESS_EQUAL
                     if constraint.get_inequality_sign() == RelationalOperators.GREATER_THAN_OR_EQUAL_TO:
                         gurobi_inequality = GRB.GREATER_EQUAL
-                    self.__model.addConstr(
+                    self.__model.addConstr(_make_constr(
                         gp.LinExpr(coefficients, self.__vars),
                         gurobi_inequality, sum_limit
-                    )
+                    ))
 
     
     def __add_objective_to_model(

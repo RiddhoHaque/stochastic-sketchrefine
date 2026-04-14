@@ -1,11 +1,45 @@
 import copy
+import subprocess
 import gurobipy as gp
 from gurobipy import GRB
 import numpy as np
 import psutil
 
+
+def _make_constr(lhs, sense, rhs):
+    """Build a Gurobi TempConstr from (lhs, sense, rhs).
+
+    Gurobi 11+ removed the positional addConstr(lhs, sense, rhs) form;
+    callers must now pass a single TempConstr expression.
+    """
+    if sense == GRB.LESS_EQUAL:
+        return lhs <= rhs
+    if sense == GRB.GREATER_EQUAL:
+        return lhs >= rhs
+    return lhs == rhs
+
+try:
+    import torch as _torch
+    _TORCH_AVAILABLE = True
+except ImportError:
+    _torch = None
+    _TORCH_AVAILABLE = False
+
+
+def _has_gpu() -> bool:
+    """Return True if a CUDA-capable GPU is available."""
+    if _TORCH_AVAILABLE:
+        return _torch.cuda.is_available()
+    try:
+        r = subprocess.run(['nvidia-smi'], capture_output=True, timeout=5)
+        return r.returncode == 0
+    except Exception:
+        pass
+    return False
+
 from CVaRification.CVaRificationSearchResults import CVaRificationSearchResults
 from DbInfo.DbInfo import DbInfo
+from Hyperparameters.Hyperparameters import Hyperparameters
 from OptimizationMetrics.OptimizationMetrics import OptimizationMetrics
 from PgConnection.PgConnection import PgConnection
 from SeedManager.SeedManager import SeedManager
@@ -40,7 +74,13 @@ class RCLSolve:
                  gurobi_env = None,
                  check_feasibility = False,
                  optimize_lcvar: bool = False,
-                 early_termination: bool = False):
+                 early_termination: bool = False,
+                 iterative_constraint_addition: bool = False,
+                 set_initial_constraints_randomly: bool = False,
+                 solve_lp_first: bool = False,
+                 increment_in_number_of_constraints: int | None = None,
+                 use_gpu: bool = True,
+                 solve_dual_lp: bool = True):
         self.__query = copy.deepcopy(query)
         if gurobi_env is None:
             self.__gurobi_env = gp.Env(
@@ -58,6 +98,20 @@ class RCLSolve:
         self.__check_feasibility = check_feasibility
         self.__optimize_lcvar = optimize_lcvar
         self.__early_termination = early_termination
+        if solve_lp_first:
+            iterative_constraint_addition = True
+        self.__iterative_constraint_addition = iterative_constraint_addition
+        self.__set_initial_constraints_randomly = set_initial_constraints_randomly
+        self.__solve_lp_first = solve_lp_first
+        self.__increment_in_number_of_constraints = (
+            increment_in_number_of_constraints
+            if increment_in_number_of_constraints is not None
+            else Hyperparameters.INCREMENT_IN_NUMBER_OF_CONSTRAINTS
+        )
+        self.__has_gpu = use_gpu and _has_gpu()
+        self.__solve_dual_lp = solve_dual_lp
+        self.__z_constrained_scenarios: set = set()
+        self.__z_iterative_active = False
         self.__is_linear_relaxation = \
             linear_relaxation
         self.__init_no_of_scenarios = \
@@ -132,10 +186,7 @@ class RCLSolve:
         if self.__query.get_objective().is_cvar_objective():
             self.__V = None
             self.__Zs = []
-            # Lazy Z_s constraint state
-            self.__z_groups = []          # List[frozenset[int]]
-            self.__z_group_constrs = []   # List[gp.Constr]
-            self.__z_lazy_active = False  # True once lazy init has run
+            self.__z_lazy_active = False  # kept for attribute existence; never set True
 
     
     def get_validator(self):
@@ -293,10 +344,10 @@ class RCLSolve:
             self.__get_gurobi_inequality(
                 package_size_constraint.get_inequality_sign())
 
-        self.__model.addConstr(
+        self.__model.addConstr(_make_constr(
             gp.LinExpr([1]*self.__no_of_vars, self.__vars),
             gurobi_inequality, size_limit
-        )
+        ))
     
 
     def __add_deterministic_constraint_to_model(
@@ -308,10 +359,10 @@ class RCLSolve:
                 deterministic_constraint.get_inequality_sign())
         sum_limit = deterministic_constraint.get_sum_limit()
         
-        self.__model.addConstr(
+        self.__model.addConstr(_make_constr(
             gp.LinExpr(self.__values[attribute], self.__vars),
             gurobi_inequality, sum_limit
-        )
+        ))
 
 
     def __add_feasible_no_of_scenarios(self, attribute: str):
@@ -400,10 +451,10 @@ class RCLSolve:
         if expected_sum_limit is None:
             expected_sum_limit = expected_sum_constraint.get_sum_limit()
 
-        return self.__model.addConstr(
+        return self.__model.addConstr(_make_constr(
             gp.LinExpr(coefficients, self.__vars),
             gurobi_inequality, expected_sum_limit
-        )
+        ))
     
 
     def __get_no_of_scenarios_to_consider(
@@ -530,12 +581,12 @@ class RCLSolve:
         self.__risk_constraints.append(risk_constraint)
         self.__risk_to_lcvar_constraint_mapping[
             risk_constraint] = \
-                self.__model.addConstr(
+                self.__model.addConstr(_make_constr(
                     gp.LinExpr(
                         coefficients, self.__vars),
                     gurobi_inequality,
                     cvarified_constraint.get_sum_limit()
-                )
+                ))
 
 
     def __get_cvarified_constraint(
@@ -568,38 +619,60 @@ class RCLSolve:
 
         return cvarified_constraint
 
-    def __build_aggregate_z_lin_expr(self, group: frozenset, attribute: str):
-        """Build LHS and RHS for aggregate Z_s constraint over a group of scenarios."""
-        group_list = sorted(group)
-        G = len(group_list)
-        lhs = gp.LinExpr([1.0] * G, [self.__Zs[s] for s in group_list])
-        agg_coeffs = [
-            sum(self.__scenarios[attribute][i][s] for s in group_list)
-            for i in range(self.__no_of_vars)
-        ]
-        rhs = gp.LinExpr(agg_coeffs, self.__vars)
-        rhs.addTerms(-float(G), self.__V)
-        return lhs, rhs
+    def __gpu_matmul(self, mat: np.ndarray, x_arr: np.ndarray) -> np.ndarray:
+        """Compute mat.T @ x_arr, using GPU if available."""
+        if self.__has_gpu and _TORCH_AVAILABLE:
+            try:
+                m = _torch.tensor(mat, dtype=_torch.float64, device='cuda')
+                x = _torch.tensor(x_arr, dtype=_torch.float64, device='cuda')
+                return (m.T @ x).cpu().numpy()
+            except Exception:
+                pass
+        return mat.T @ x_arr
 
-    def __init_z_lazy_constraints(self, no_of_scenarios: int, attribute: str):
-        """Initialize lazy Z_s constraints with single aggregate over all scenarios."""
-        self.__z_groups = []
-        self.__z_group_constrs = []
-        all_s = frozenset(range(no_of_scenarios))
-        self.__z_groups.append(all_s)
-        lhs, rhs = self.__build_aggregate_z_lin_expr(all_s, attribute)
+    def __add_z_constraint_for_scenario(self, s: int, attribute: str) -> None:
+        """Add the individual Z_s constraint for scenario s to the model."""
+        if s in self.__z_constrained_scenarios:
+            return
         tail = self.__query.get_objective().get_tail_type()
-        constr = self.__model.addConstr(lhs <= rhs if tail == TailType.LOWEST else lhs >= rhs)
-        self.__z_group_constrs.append(constr)
-        self.__z_lazy_active = True
+        coeffs = [self.__scenarios[attribute][i][s] for i in range(self.__no_of_vars)]
+        rhs = gp.LinExpr(coeffs, self.__vars)
+        rhs.addTerms(-1.0, self.__V)
+        if tail == TailType.LOWEST:
+            self.__model.addConstr(self.__Zs[s] <= rhs)
+        else:
+            self.__model.addConstr(self.__Zs[s] >= rhs)
+        self.__z_constrained_scenarios.add(s)
 
-    def __check_z_violations(self, attribute: str, tol: float = 1e-6) -> list[int]:
+    def __init_z_direct_constraints(self, no_of_scenarios: int, attribute: str) -> None:
+        """Add all S individual Z constraints directly to the model."""
+        for s in range(no_of_scenarios):
+            self.__add_z_constraint_for_scenario(s, attribute)
+
+    def __init_z_iterative_constraints(self, no_of_scenarios: int, attribute: str) -> None:
+        """Add the initial m' Z constraints for iterative constraint addition."""
+        pct = self.__query.get_objective().get_percentage_of_scenarios()
+        m_prime = max(1, int(pct * no_of_scenarios))
+        if self.__set_initial_constraints_randomly:
+            initial = list(np.random.choice(
+                no_of_scenarios, min(m_prime, no_of_scenarios), replace=False))
+        else:
+            totals = np.array([
+                sum(self.__scenarios[attribute][i][s]
+                    for i in range(self.__no_of_vars))
+                for s in range(no_of_scenarios)
+            ])
+            initial = list(np.argsort(totals)[:m_prime])
+        for s in initial:
+            self.__add_z_constraint_for_scenario(s, attribute)
+
+    def __check_z_violations(self, attribute: str, tol: float = 1e-6) -> list:
         """Vectorized check for violated individual Z_s constraints."""
         V_val = self.__V.x
         x_arr = np.array([v.x for v in self.__vars])
         mat = np.array([self.__scenarios[attribute][i]
                         for i in range(self.__no_of_vars)])
-        lin_vals = mat.T @ x_arr
+        lin_vals = self.__gpu_matmul(mat, x_arr)
         rhs_vals = lin_vals - V_val
         z_vals = np.array([z.x for z in self.__Zs])
         tail = self.__query.get_objective().get_tail_type()
@@ -609,33 +682,239 @@ class RCLSolve:
             mask = z_vals < rhs_vals - tol
         return list(np.where(mask)[0])
 
-    def __refine_z_constraints(self, attribute: str, tol: float = 1e-6) -> bool:
-        """Perform one round of constraint splitting. Returns True if splits occurred."""
-        violated_set = set(self.__check_z_violations(attribute, tol))
-        if not violated_set:
-            return False
+    def __get_violation_amounts(self, attribute: str) -> np.ndarray:
+        """Compute per-scenario violation amounts for all Z constraints."""
+        V_val = self.__V.x
+        x_arr = np.array([v.x for v in self.__vars])
+        mat = np.array([self.__scenarios[attribute][i]
+                        for i in range(self.__no_of_vars)])
+        lin_vals = self.__gpu_matmul(mat, x_arr)
+        rhs_vals = lin_vals - V_val
+        z_vals = np.array([z.x for z in self.__Zs])
         tail = self.__query.get_objective().get_tail_type()
-        new_groups, new_constrs = [], []
-        for group, constr in zip(self.__z_groups, self.__z_group_constrs):
-            viol = group & violated_set
-            sat  = group - violated_set
-            print(f'Group of size {len(group)}: {len(viol)} violated, {len(sat)} satisfied')
-            if not viol:
-                new_groups.append(group)
-                new_constrs.append(constr)
-                continue
-            self.__model.remove(constr)
-            for sub in [sat, viol]:
-                if not sub:
-                    continue
-                lhs, rhs = self.__build_aggregate_z_lin_expr(sub, attribute)
-                c = self.__model.addConstr(lhs <= rhs if tail == TailType.LOWEST else lhs >= rhs)
-                new_groups.append(sub)
-                new_constrs.append(c)
-        self.__z_groups = new_groups
-        print(f'Added {len(new_constrs) - len(self.__z_group_constrs)} Z_s constraints; now have {len(self.__z_group_constrs)} total.')
-        self.__z_group_constrs = new_constrs
-        return True
+        if tail == TailType.LOWEST:
+            return np.maximum(0.0, z_vals - rhs_vals)
+        else:
+            return np.maximum(0.0, rhs_vals - z_vals)
+
+    def __get_package_with_iterative_z(self):
+        """Solve with iterative Z constraint addition (add p at a time)."""
+        attribute = self.__query.get_objective().get_attribute_name()
+        p = self.__increment_in_number_of_constraints
+        while True:
+            self.__metrics.start_optimizer()
+            self.__model.optimize()
+            self.__metrics.end_optimizer()
+            status = self.__model.Status
+            if status in (GRB.INFEASIBLE, GRB.INF_OR_UNBD, GRB.UNBOUNDED):
+                return None
+            if status not in (GRB.OPTIMAL, GRB.SUBOPTIMAL):
+                return self.__extract_package_from_model()
+            try:
+                _ = self.__V.x
+            except AttributeError:
+                return None
+
+            violated = self.__check_z_violations(attribute, tol=1e-6)
+            unconstrained_violated = [
+                s for s in violated if s not in self.__z_constrained_scenarios]
+            if not unconstrained_violated:
+                break
+
+            violations = self.__get_violation_amounts(attribute)
+            to_add = sorted(
+                unconstrained_violated, key=lambda s: violations[s], reverse=True)[:p]
+            for s in to_add:
+                self.__add_z_constraint_for_scenario(s, attribute)
+            print(f'Iterative Z: added {len(to_add)}, '
+                  f'constrained {len(self.__z_constrained_scenarios)}/{len(self.__Zs)}')
+        return self.__extract_package_from_model()
+
+    def __rebuild_model_for_ilp_phase(
+        self, no_of_scenarios: int,
+        support_indices: set,
+        z_scenarios: set
+    ) -> None:
+        """Rebuild the Gurobi model for the ILP phase of solve_lp_first.
+
+        Variables not in support_indices are fixed to 0 (ub=0).
+        """
+        self.__model = gp.Model(env=self.__gurobi_env)
+        max_rep = self.__get_upper_bound_for_vars()
+        self.__vars = []
+        for i in range(self.__no_of_vars):
+            if i in support_indices:
+                ub = max_rep if max_rep is not None else GRB.INFINITY
+            else:
+                ub = 0
+            self.__vars.append(
+                self.__model.addVar(lb=0, ub=ub, vtype=GRB.INTEGER))
+
+        tail = self.__query.get_objective().get_tail_type()
+        self.__V = self.__model.addVar(vtype=GRB.CONTINUOUS)
+        self.__Zs = []
+        for _ in range(no_of_scenarios):
+            if tail == TailType.LOWEST:
+                self.__Zs.append(self.__model.addVar(ub=0, vtype=GRB.CONTINUOUS))
+            else:
+                self.__Zs.append(self.__model.addVar(lb=0, vtype=GRB.CONTINUOUS))
+
+        any_high_tail_cvar = any(
+            c.get_percentage_of_scenarios() > 50.0
+            for c in self.__query.get_constraints()
+            if c.is_cvar_constraint()
+        )
+        for constraint in self.__query.get_constraints():
+            if constraint.is_package_size_constraint():
+                self.__add_package_size_constraint_to_model(constraint)
+            elif constraint.is_deterministic_constraint():
+                self.__add_deterministic_constraint_to_model(constraint)
+            elif constraint.is_expected_sum_constraint():
+                self.__add_expected_sum_constraint_to_model(constraint, no_of_scenarios)
+            elif constraint.is_risk_constraint() and not any_high_tail_cvar:
+                attr = constraint.get_attribute_name()
+                sum_limit = constraint.get_sum_limit()
+                self.__add_feasible_no_of_scenarios(attr)
+                coeffs = [
+                    np.median(self.__scenarios[attr][idx])
+                    for idx in range(self.__no_of_vars)
+                ]
+                ineq = (
+                    GRB.GREATER_EQUAL
+                    if constraint.get_inequality_sign() ==
+                    RelationalOperators.GREATER_THAN_OR_EQUAL_TO
+                    else GRB.LESS_EQUAL
+                )
+                self.__model.addConstr(_make_constr(
+                    gp.LinExpr(coeffs, self.__vars), ineq, sum_limit))
+
+        self.__z_constrained_scenarios = set()
+        attribute = self.__query.get_objective().get_attribute_name()
+        for s in z_scenarios:
+            self.__add_z_constraint_for_scenario(s, attribute)
+
+        self.__add_objective_to_model(self.__query.get_objective(), no_of_scenarios)
+
+    def __solve_with_lp_first(self):
+        """LP-first approach: solve LP relaxation iteratively, then ILP with
+        restricted variable support and iterative tuple addition."""
+        no_of_scenarios = self.__init_no_of_scenarios
+        self.__add_all_scenarios_if_possible(no_of_scenarios)
+        attribute = self.__query.get_objective().get_attribute_name()
+        tail = self.__query.get_objective().get_tail_type()
+        p = self.__increment_in_number_of_constraints
+
+        # --- LP phase: iterative Z constraint addition ---
+        orig_lr = self.__is_linear_relaxation
+        self.__is_linear_relaxation = True
+        self.__model_setup(
+            no_of_scenarios=no_of_scenarios,
+            no_of_scenarios_to_consider=[],
+            probabilistically_constrained=False
+        )
+        self.__is_linear_relaxation = orig_lr
+
+        if self.__has_gpu:
+            try:
+                self.__model.Params.Method = 14  # PDHG (Gurobi 11+, GPU)
+            except Exception:
+                pass
+        elif self.__solve_dual_lp:
+            try:
+                self.__model.Params.Method = 1   # Dual simplex
+            except Exception:
+                pass
+        else:
+            try:
+                self.__model.Params.Method = 0   # Primal simplex
+            except Exception:
+                pass
+
+        while True:
+            self.__metrics.start_optimizer()
+            self.__model.optimize()
+            self.__metrics.end_optimizer()
+            status = self.__model.Status
+            if status in (GRB.INFEASIBLE, GRB.INF_OR_UNBD, GRB.UNBOUNDED):
+                return (None, 0.0)
+            try:
+                _ = self.__V.x
+            except AttributeError:
+                return (None, 0.0)
+
+            violated = self.__check_z_violations(attribute, tol=1e-6)
+            unconstrained_violated = [
+                s for s in violated if s not in self.__z_constrained_scenarios]
+            if not unconstrained_violated:
+                break
+
+            violations = self.__get_violation_amounts(attribute)
+            to_add = sorted(
+                unconstrained_violated,
+                key=lambda s: violations[s], reverse=True)[:p]
+            for s in to_add:
+                self.__add_z_constraint_for_scenario(s, attribute)
+            print(f'LP-first LP phase: added {len(to_add)} Z constraints, '
+                  f'total {len(self.__z_constrained_scenarios)}/{len(self.__Zs)}')
+
+        lp_x_vals = np.array([v.x for v in self.__vars])
+        current_support = set(int(i) for i in np.where(lp_x_vals > 1e-6)[0])
+        if not current_support:
+            return (None, 0.0)
+        lp_z_constrained = set(self.__z_constrained_scenarios)
+
+        # --- ILP phase: iterative tuple addition ---
+        while True:
+            self.__rebuild_model_for_ilp_phase(
+                no_of_scenarios, current_support, lp_z_constrained)
+            self.__metrics.start_optimizer()
+            self.__model.optimize()
+            self.__metrics.end_optimizer()
+            status = self.__model.Status
+            if status in (GRB.INFEASIBLE, GRB.INF_OR_UNBD, GRB.UNBOUNDED):
+                return (None, 0.0)
+            try:
+                _ = self.__V.x
+            except AttributeError:
+                return (None, 0.0)
+
+            violated = self.__check_z_violations(attribute, tol=1e-6)
+            if not violated:
+                break
+
+            non_support = [i for i in range(self.__no_of_vars)
+                           if i not in current_support]
+            if not non_support:
+                break
+
+            q = len(current_support)
+            violated_arr = np.array(violated)
+            mat = np.array([self.__scenarios[attribute][i]
+                            for i in range(self.__no_of_vars)])
+            if self.__has_gpu and _TORCH_AVAILABLE:
+                try:
+                    mat_gpu = _torch.tensor(
+                        mat[:, violated_arr], dtype=_torch.float64, device='cuda')
+                    sums = mat_gpu.sum(dim=1).cpu().numpy()
+                except Exception:
+                    sums = mat[:, violated_arr].sum(axis=1)
+            else:
+                sums = mat[:, violated_arr].sum(axis=1)
+
+            non_support_sums = [(i, sums[i]) for i in non_support]
+            if tail == TailType.LOWEST:
+                non_support_sums.sort(key=lambda x: x[1], reverse=True)
+            else:
+                non_support_sums.sort(key=lambda x: x[1])
+            for i, _ in non_support_sums[:q]:
+                current_support.add(i)
+            print(f'LP-first ILP phase: expanded support to {len(current_support)} tuples')
+
+        package = self.__extract_package_from_model()
+        if package is None:
+            return (None, 0.0)
+        obj_val = self.__validator.get_validation_objective_value(package)
+        return (package, obj_val)
 
     def __add_constraints_to_model(
         self, no_of_scenarios: int,
@@ -722,10 +1001,10 @@ class RCLSolve:
                         if constraint.get_inequality_sign() == \
                                 RelationalOperators.GREATER_THAN_OR_EQUAL_TO:
                             gurobi_inequality = GRB.GREATER_EQUAL
-                        self.__model.addConstr(
+                        self.__model.addConstr(_make_constr(
                             gp.LinExpr(coefficients, self.__vars),
                             gurobi_inequality, sum_limit
-                        )
+                        ))
 
                 stochastic_constraint_index += 1
 
@@ -733,7 +1012,13 @@ class RCLSolve:
                 self.__query.get_objective().is_cvar_objective():
             attribute = self.__query.get_objective().get_attribute_name()
             self.__z_lazy_active = False
-            self.__init_z_lazy_constraints(no_of_scenarios, attribute)
+            self.__z_constrained_scenarios = set()
+            if self.__iterative_constraint_addition:
+                self.__z_iterative_active = True
+                self.__init_z_iterative_constraints(no_of_scenarios, attribute)
+            else:
+                self.__z_iterative_active = False
+                self.__init_z_direct_constraints(no_of_scenarios, attribute)
 
 
     
@@ -894,33 +1179,11 @@ class RCLSolve:
             return None
         return package_dict
 
-    def __get_package_with_z_refinement(self):
-        """Solve with lazy Z_s constraint refinement."""
-        attribute = self.__query.get_objective().get_attribute_name()
-        max_rounds = len(self.__Zs) + 1
-        for _ in range(max_rounds):
-            self.__metrics.start_optimizer()
-            self.__model.optimize()
-            self.__metrics.end_optimizer()
-            status = self.__model.Status
-            if status in (GRB.INFEASIBLE, GRB.INF_OR_UNBD, GRB.UNBOUNDED):
-                return None
-            if status not in (GRB.OPTIMAL, GRB.SUBOPTIMAL):
-                return self.__extract_package_from_model()
-            try:
-                _ = self.__V.x
-            except AttributeError:
-                return None
-            if not self.__refine_z_constraints(attribute):
-                break
-            print('Needs more refinement, adding more Z_s constraints and re-optimizing...')
-        return self.__extract_package_from_model()
-
     def __get_package(self):
         if (not self.__check_feasibility and not self.__optimize_lcvar
                 and self.__query.get_objective().is_cvar_objective()
-                and self.__z_lazy_active):
-            return self.__get_package_with_z_refinement()
+                and self.__z_iterative_active):
+            return self.__get_package_with_iterative_z()
         self.__metrics.start_optimizer()
         self.__model.optimize()
         self.__metrics.end_optimizer()
@@ -2058,6 +2321,13 @@ class RCLSolve:
 
     def solve(self, can_add_scenarios = True):
         self.__metrics.start_execution()
+        if self.__solve_lp_first:
+            result = self.__solve_with_lp_first()
+            self.__metrics.end_execution(
+                result[1] if result[0] is not None else 0.0,
+                self.__init_no_of_scenarios
+            )
+            return result
         no_of_scenarios = self.__init_no_of_scenarios
         unacceptable_diff = True
 

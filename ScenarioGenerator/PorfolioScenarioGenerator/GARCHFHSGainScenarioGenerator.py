@@ -1,4 +1,5 @@
 import os
+import re
 import numpy as np
 from numpy.random import SFC64, SeedSequence, Generator
 from concurrent.futures import ThreadPoolExecutor
@@ -72,11 +73,12 @@ class GARCHFHSGainScenarioGenerator(ScenarioGenerator):
     def __init__(self, relation: str, residuals_relation: str = None,
                  base_predicate: str = ''):
         self.__relation = relation
-        # Default: replace 'Portfolio' with 'Residuals' in the relation name
+        # Default: replace 'Portfolio'/'portfolio' with 'Residuals'/'residuals'
+        # in the relation name (case-insensitive to handle parser lowercasing).
         self.__residuals_relation = (
             residuals_relation
             if residuals_relation is not None
-            else relation.replace('Portfolio', 'Residuals')
+            else re.sub('portfolio', 'residuals', relation, flags=re.IGNORECASE)
         )
         self.__base_predicate = base_predicate or '1=1'
 

@@ -10,8 +10,13 @@ script, generate comparison plots, and run the demo query workload.
 ### Python packages
 
 ```bash
-pip install psycopg2-binary yfinance arch pandas pandas_market_calendars matplotlib numpy
+pip install psycopg2-binary yfinance arch pandas pandas_market_calendars matplotlib numpy torch gurobipy psutil
 ```
+
+> **Note:** `torch` is an optional dependency used for GPU-accelerated matrix
+> multiplication when a CUDA-capable GPU is available (for iterative Z-constraint
+> checking and the LP-first solve mode). If `torch` is not installed or no GPU is
+> present, the code falls back to vectorised NumPy automatically.
 
 ### PostgreSQL
 
@@ -172,7 +177,80 @@ figure per benchmark year plus a runtime comparison chart.
 
 ---
 
-## Step 5 - Run the demo query workload
+## Step 5 - Run the solver benchmarks
+
+Six benchmark scripts measure different aspects of the RCLSolve solver on Q2.sql.
+Run each from the project root:
+
+### 5a — Iterative Z constraint addition vs scenario count
+
+```bash
+python DemoScripts/benchmark_iterative_constraint_addition.py
+```
+
+Varies the number of optimisation scenarios over `[10, 20, 50, 80, 100]` and
+compares three solver configurations:
+
+| Configuration | Flags |
+|---|---|
+| `Default_RCLSolve` | *(none)* |
+| `Iterative_Z` | `iterative_constraint_addition=True` |
+| `Iterative_Z+LP_First` | `iterative_constraint_addition=True, solve_lp_first=True` |
+
+A method is skipped for higher scenario counts once it times out (20-minute cap per run).
+Results are saved to `Evaluation/benchmark_iterative_constraint_addition.txt`.
+
+### 5b — Increment hyperparameter sweep
+
+```bash
+python DemoScripts/benchmark_increment_hyperparameter.py
+```
+
+Fixes the scenario count at 50 and varies `increment_in_number_of_constraints`
+over `[1, 5, 10, 15, 20]` with `iterative_constraint_addition=True` and
+`solve_lp_first=True`.
+Results are saved to `Evaluation/benchmark_increment_hyperparameter.txt`.
+
+### 5c — Random vs heuristic initial Z constraints
+
+```bash
+python DemoScripts/benchmark_random_initial_constraints.py
+```
+
+Compares two initialisation strategies for the iterative Z constraint addition
+under `solve_lp_first=True`:
+
+| Configuration | Flag |
+|---|---|
+| `LP_First / heuristic_init` | `set_initial_constraints_randomly=False` |
+| `LP_First / random_init` | `set_initial_constraints_randomly=True` |
+
+Results are saved to `Evaluation/benchmark_random_initial_constraints.txt`.
+
+### 5d — GPU vs CPU
+
+```bash
+python DemoScripts/benchmark_use_gpu.py
+```
+
+Compares `use_gpu=True` (PDHG LP solver + GPU matrix multiply) against
+`use_gpu=False` (CPU only), both with `solve_lp_first=True`.
+Results are saved to `Evaluation/benchmark_use_gpu.txt`.
+
+### 5e — Dual simplex vs primal simplex
+
+```bash
+python DemoScripts/benchmark_solve_dual_lp.py
+```
+
+Runs with `use_gpu=False` and compares `solve_dual_lp=True` (Gurobi dual
+simplex, Method=1) against `solve_dual_lp=False` (primal simplex, Method=0),
+both with `solve_lp_first=True`.
+Results are saved to `Evaluation/benchmark_solve_dual_lp.txt`.
+
+---
+
+## Step 6 - Run the demo query workload
 
 From the project root:
 
@@ -233,6 +311,15 @@ DemoScripts/
   benchmark_gain_methods.py        # Runs benchmark, writes JSON
   plot_benchmark_results.py        # Reads JSON, writes PNG plots
   QueryRunner.py                   # Runs the demo SQL workload with SketchRefine
+  benchmark_iterative_constraint_addition.py  # Script 5a: runtime/objective vs optimisation scenario count
+  benchmark_increment_hyperparameter.py       # Script 5b: runtime/objective vs increment_in_number_of_constraints
+  benchmark_random_initial_constraints.py     # Script 5c: heuristic vs random initial Z constraints
+  benchmark_use_gpu.py                        # Script 5d: GPU vs CPU LP solve
+  benchmark_solve_dual_lp.py                 # Script 5e: dual simplex vs primal simplex LP solve
+
+Workloads/DemoWorkload/
+  Q1.sql                           # Original demo query (GBM_Portfolio_2025)
+  Q2.sql                           # CVaR-objective query on Garch_Portfolio_2023
 gbm_fhs_diameter_threshold_search.py  # Searches for optimal diameter thresholds
 Evaluation/
   benchmark_results.json           # Output of benchmark (auto-created)
