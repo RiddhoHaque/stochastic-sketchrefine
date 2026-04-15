@@ -1,0 +1,4 @@
+Configuration                              AvgRuntime(s)   StdRuntime(s)        AvgObj        StdObj  N/Iter    Status
+----------------------------------------------------------------------------------------------------------------------
+LP_First / use_gpu=True                          68.6847          3.3213     -119.5583        0.0000       5        OK
+LP_First / use_gpu=False                         66.1044          0.6283     -119.5583        0.0000       5        OK

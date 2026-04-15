@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
 """
-For every GARCH_Portfolio_YYYY relation (years 2017, 2019, 2022, 2023, 2025):
+For every GBM_Portfolio_YYYY and GARCH_Portfolio_YYYY relation (years 2020-2025):
 
   1. Solve Workloads/DemoWorkload/Q1.sql with SketchRefine.
      Print the chosen package (with full attribute values) and its BackTest gain.
+     If no feasible package is found, skip phase 2.
 
   2. Build an alternative CVaR-maximisation query:
          SUM(Price)        <= 5000
-         EXPECTED SUM(Gain) >= 0.90 * O      (O = SketchRefine objective value)
+         EXPECTED SUM(Gain) >= min(0.50 * O, O - 20)   (O = SketchRefine obj)
          MAXIMIZE  EXPECTED SUM(Gain)  IN LOWER 0.05 TAIL
-     Solve it with:
-       a) CVaROptimizerBaseline
-       b) SketchRefine
-     Print each package + BackTest gain.
+     Solve it with SketchRefine only.
+     Print the package + BackTest gain.
+
+Each solver call has a 20-minute timeout.
 
 Run from the project root or from DemoScripts:
     python DemoScripts/QueryRunner.py
@@ -33,7 +34,6 @@ warnings.filterwarnings('ignore')
 import psycopg2
 
 from BackTest.BackTest import BackTest
-from CVaROptimizer.CVaROptimizerBaseline import CVaROptimizerBaseline
 from DbInfo.GBMPortfolioInfo import GBMPortfolioInfo
 from DbInfo.GarchPortfolioInfo import GarchPortfolioInfo
 from Hyperparameters.Hyperparameters import Hyperparameters
@@ -45,8 +45,8 @@ from StochasticPackageQuery.Parser.Parser import Parser
 from StochasticPackageQuery.Query import Query
 
 SQL_PATH = os.path.join(_PROJECT_ROOT, 'Workloads', 'DemoWorkload', 'Q1.sql')
-YEARS    = range(2021, 2026)
-TIMEOUT  = 60 * 60   # seconds per solver call
+YEARS    = range(2020, 2026)
+TIMEOUT  = 60 * 20   # seconds per solver call (20 minutes)
 
 _INDEX_LABELS = {
     'dow_pct':         'DOW',
@@ -125,7 +125,7 @@ def _build_cvar_query(base_query: Query, relation: str,
         if c.is_repeat_constraint():
             q.add_constraint(copy.deepcopy(c))
 
-    # Expected-sum floor: EXPECTED SUM(gain) >= 0.90 * O
+    # Expected-sum floor: EXPECTED SUM(gain) >= 0.50 * O
     esc = ExpectedSumConstraint()
     esc.set_attribute_name('gain')
     esc.set_inequality_sign('>')
@@ -266,20 +266,23 @@ def _run_one(base_query: Query, relation: str, db_info) -> list[dict]:
     cvar_query  = _build_cvar_query(base_query, relation, min_gain)
     print(f'\n  Building CVaR query with EXPECTED SUM(Gain) >= {min_gain:.4f}')
 
-    # SketchRefine on CVaR query (L-CVaR)
-    def _run_lcvar():
+    # SketchRefine on CVaR query
+    def _run_sr_cvar():
         q = copy.deepcopy(cvar_query)
-        solver = SketchRefine(query=q, dbInfo=db_info, is_lp_relaxation=False, optimize_lcvar=True, early_termination=True)
-        #start_time = time.time()
-        #solver = CVaROptimizerBaseline(query=q, dbInfo=db_info, num_val_scenarios=Hyperparameters.NO_OF_VALIDATION_SCENARIOS)
-        pkg, _ = solver.solve()
+        solver = SketchRefine(
+            query=q,
+            dbInfo=db_info,
+            is_lp_relaxation=False,
+            optimize_lcvar=True,
+            early_termination=True,
+        )
+        pkg, obj_val = solver.solve()
         runtime = solver.get_metrics().get_runtime()
-        #runtime = time.time() - start_time
-        return pkg, (solver.get_metrics().get_objective_value() if pkg is not None else 0.0), runtime
+        return pkg, (obj_val if pkg is not None else 0.0), runtime
 
-    lc = _solve_and_report('SketchRefine/CVaR(L-CVaR)', _run_lcvar, relation)
-    lc['timed_out'] = False
-    results.append(lc)
+    sr_cvar = _solve_and_report('SketchRefine/CVaR', _run_sr_cvar, relation)
+    sr_cvar['timed_out'] = False
+    results.append(sr_cvar)
     return results
 
 
@@ -338,7 +341,7 @@ def main():
     all_summaries = []   # flat list of result dicts
 
     # Run both GBM and GARCH relations
-    for portfolio_type, db_info_class in [#('GBM_Portfolio', GBMPortfolioInfo),
+    for portfolio_type, db_info_class in [('GBM_Portfolio', GBMPortfolioInfo),
                                            ('GARCH_Portfolio', GarchPortfolioInfo)]:
         print('=' * 72)
         print(f'  {portfolio_type}')

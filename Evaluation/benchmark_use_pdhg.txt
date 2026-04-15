@@ -1,0 +1,4 @@
+Configuration                              AvgRuntime(s)   StdRuntime(s)        AvgObj        StdObj  N/Iter    Status
+----------------------------------------------------------------------------------------------------------------------
+LP_First / use_pdhg=True                         68.8810          9.0685     -119.5583        0.0000       5        OK
+LP_First / use_pdhg=False                        69.8939          9.8732     -119.5583        0.0000       5        OK

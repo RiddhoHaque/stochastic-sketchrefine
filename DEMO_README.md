@@ -10,7 +10,7 @@ script, generate comparison plots, and run the demo query workload.
 ### Python packages
 
 ```bash
-pip install psycopg2-binary yfinance arch pandas pandas_market_calendars matplotlib numpy torch gurobipy psutil
+pip install psycopg2-binary yfinance arch pandas pandas_market_calendars matplotlib numpy torch gurobipy psutil binpacking
 ```
 
 > **Note:** `torch` is an optional dependency used for GPU-accelerated matrix

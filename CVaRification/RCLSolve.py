@@ -75,12 +75,13 @@ class RCLSolve:
                  check_feasibility = False,
                  optimize_lcvar: bool = False,
                  early_termination: bool = False,
-                 iterative_constraint_addition: bool = False,
+                 iterative_constraint_addition: bool = True,
                  set_initial_constraints_randomly: bool = False,
-                 solve_lp_first: bool = False,
+                 solve_lp_first: bool = True,
                  increment_in_number_of_constraints: int | None = None,
                  use_gpu: bool = True,
-                 solve_dual_lp: bool = True):
+                 solve_dual_lp: bool = True,
+                 use_pdhg: bool = False):
         self.__query = copy.deepcopy(query)
         if gurobi_env is None:
             self.__gurobi_env = gp.Env(
@@ -110,6 +111,7 @@ class RCLSolve:
         )
         self.__has_gpu = use_gpu and _has_gpu()
         self.__solve_dual_lp = solve_dual_lp
+        self.__use_pdhg = use_pdhg
         self.__z_constrained_scenarios: set = set()
         self.__z_iterative_active = False
         self.__is_linear_relaxation = \
@@ -650,21 +652,20 @@ class RCLSolve:
             self.__add_z_constraint_for_scenario(s, attribute)
 
     def __init_z_iterative_constraints(self, no_of_scenarios: int, attribute: str) -> None:
-        """Add the initial m' Z constraints for iterative constraint addition."""
-        pct = self.__query.get_objective().get_percentage_of_scenarios()
-        m_prime = max(1, int(pct * no_of_scenarios))
-        if self.__set_initial_constraints_randomly:
-            initial = list(np.random.choice(
-                no_of_scenarios, min(m_prime, no_of_scenarios), replace=False))
-        else:
-            totals = np.array([
-                sum(self.__scenarios[attribute][i][s]
-                    for i in range(self.__no_of_vars))
-                for s in range(no_of_scenarios)
-            ])
-            initial = list(np.argsort(totals)[:m_prime])
-        for s in initial:
-            self.__add_z_constraint_for_scenario(s, attribute)
+        """Seed with one Z constraint to anchor V, then let the iterative loop add the rest.
+
+        Without at least one Z_s constraint, V is unbounded above and the LP/ILP
+        is immediately infeasible/unbounded.  A single seed scenario is the minimum
+        needed to make V finite while still leaving almost all constraints for the
+        iterative phase.
+        """
+        totals = np.array([
+            sum(self.__scenarios[attribute][i][s]
+                for i in range(self.__no_of_vars))
+            for s in range(no_of_scenarios)
+        ])
+        seed = int(np.argsort(totals)[no_of_scenarios // 2])  # median scenario
+        self.__add_z_constraint_for_scenario(seed, attribute)
 
     def __check_z_violations(self, attribute: str, tol: float = 1e-6) -> list:
         """Vectorized check for violated individual Z_s constraints."""
@@ -740,6 +741,8 @@ class RCLSolve:
         Variables not in support_indices are fixed to 0 (ub=0).
         """
         self.__model = gp.Model(env=self.__gurobi_env)
+        if self.__query.get_objective().is_cvar_objective():
+            self.__model.Params.MIPGap = self.__approximation_bound
         max_rep = self.__get_upper_bound_for_vars()
         self.__vars = []
         for i in range(self.__no_of_vars):
@@ -814,9 +817,25 @@ class RCLSolve:
         )
         self.__is_linear_relaxation = orig_lr
 
-        if self.__has_gpu:
+        # Bound V from scenario data to prevent an unbounded LP when few Z
+        # constraints are active.  With m < ceil(α·S) constraints seeded, the
+        # objective grows as V·(1 − m/αS) → ∞, which causes PDHG to diverge
+        # rather than quickly detecting the unbounded ray (as simplex would).
+        # Setting V.ub / V.lb to the extreme achievable portfolio return anchors
+        # the LP without ever being binding on a real optimal solution.
+        attr_mat = np.array([self.__scenarios[attribute][i]
+                             for i in range(self.__no_of_vars)])
+        max_rep = self.__get_upper_bound_for_vars()
+        max_rep = max_rep if max_rep is not None else 1
+        scenario_sums = attr_mat.sum(axis=0)  # total return per scenario (1 unit each)
+        if tail == TailType.LOWEST:
+            self.__V.ub = float(scenario_sums.max()) * max_rep
+        else:
+            self.__V.lb = float(scenario_sums.min()) * max_rep
+
+        if self.__use_pdhg and self.__has_gpu:
             try:
-                self.__model.Params.Method = 14  # PDHG (Gurobi 11+, GPU)
+                self.__model.Params.Method = 14  # PDHG (GPU)
             except Exception:
                 pass
         elif self.__solve_dual_lp:
@@ -1150,6 +1169,8 @@ class RCLSolve:
         
         self.__model = gp.Model(
             env=self.__gurobi_env)
+        if self.__query.get_objective().is_cvar_objective():
+            self.__model.Params.MIPGap = self.__approximation_bound
         if self.__check_feasibility:
             self.__model.Params.SolutionLimit = 1
             self.__model.Params.MIPFocus = 1

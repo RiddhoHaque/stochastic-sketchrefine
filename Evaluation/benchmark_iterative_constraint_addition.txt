@@ -1,0 +1,27 @@
+ Scenarios  Method                       AvgRuntime(s)   StdRuntime(s)        AvgObj        StdObj  N/Iter       Status
+-----------------------------------------------------------------------------------------------------------------------
+        10  Direct R-U method                      N/A             N/A           N/A           N/A       0        ERROR
+        10  Iterative_Z                            N/A             N/A           N/A           N/A       0        ERROR
+        10  Iterative_Z+LP_First               56.7772          5.1581     -138.9047        0.0000       5           OK
+        10  CVaROptimizerBaseline                  N/A             N/A           N/A           N/A       0  NO_SOLUTION
+        10  RCLSolve (optimize_lcvar)              N/A             N/A           N/A           N/A       0      TIMEOUT
+        20  Direct R-U method                      N/A             N/A           N/A           N/A       0      SKIPPED
+        20  Iterative_Z                            N/A             N/A           N/A           N/A       0      SKIPPED
+        20  Iterative_Z+LP_First               59.0255          3.1466     -141.8716        0.0000       5           OK
+        20  CVaROptimizerBaseline                  N/A             N/A           N/A           N/A       0      SKIPPED
+        20  RCLSolve (optimize_lcvar)              N/A             N/A           N/A           N/A       0      SKIPPED
+        50  Direct R-U method                      N/A             N/A           N/A           N/A       0      SKIPPED
+        50  Iterative_Z                            N/A             N/A           N/A           N/A       0      SKIPPED
+        50  Iterative_Z+LP_First               69.0048          5.3268      -87.3717        0.0000       5           OK
+        50  CVaROptimizerBaseline                  N/A             N/A           N/A           N/A       0      SKIPPED
+        50  RCLSolve (optimize_lcvar)              N/A             N/A           N/A           N/A       0      SKIPPED
+        80  Direct R-U method                      N/A             N/A           N/A           N/A       0      SKIPPED
+        80  Iterative_Z                            N/A             N/A           N/A           N/A       0      SKIPPED
+        80  Iterative_Z+LP_First               71.2655          6.4933      -70.1276        0.0000       5           OK
+        80  CVaROptimizerBaseline                  N/A             N/A           N/A           N/A       0      SKIPPED
+        80  RCLSolve (optimize_lcvar)              N/A             N/A           N/A           N/A       0      SKIPPED
+       100  Direct R-U method                      N/A             N/A           N/A           N/A       0      SKIPPED
+       100  Iterative_Z                            N/A             N/A           N/A           N/A       0      SKIPPED
+       100  Iterative_Z+LP_First              100.5232          6.6593      -63.5161        0.0000       5           OK
+       100  CVaROptimizerBaseline                  N/A             N/A           N/A           N/A       0      SKIPPED
+       100  RCLSolve (optimize_lcvar)              N/A             N/A           N/A           N/A       0      SKIPPED

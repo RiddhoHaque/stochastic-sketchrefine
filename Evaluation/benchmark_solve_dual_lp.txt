@@ -1,0 +1,4 @@
+Configuration                                        AvgRuntime(s)   StdRuntime(s)        AvgObj        StdObj  N/Iter    Status
+--------------------------------------------------------------------------------------------------------------------------------
+LP_First / solve_dual_lp=True  (dual simplex)              83.1864          8.7277     -119.5583        0.0000       5        OK
+LP_First / solve_dual_lp=False (primal simplex)            79.2698          3.1726     -119.5583        0.0000       5        OK

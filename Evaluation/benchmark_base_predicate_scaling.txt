@@ -1,0 +1,16 @@
+SELL_AFTER     #Tuples  Method           AvgRuntime(s)   StdRuntime(s)        AvgObj        StdObj  N/Iter       Status
+-----------------------------------------------------------------------------------------------------------------------
+         3       5,446  RCLSolve               43.0887          2.5523      -51.9774        0.0000       5           OK
+         3       5,446  SketchRefine           39.8760          0.9797      -51.9774        0.0000       5           OK
+        10      18,151  RCLSolve               58.6983          0.6676     -120.2413        0.0000       5           OK
+        10      18,151  SketchRefine           57.5372          1.5272     -120.2413        0.0000       5           OK
+        20      36,301  RCLSolve               83.4776          2.5281     -199.9189        0.0000       5           OK
+        20      36,301  SketchRefine           83.1373          3.3161     -199.9189        0.0000       5           OK
+        50      90,736  RCLSolve              137.4189          2.6134     -247.4943        0.0000       5           OK
+        50      90,736  SketchRefine          122.4433         12.1856     -247.4943        0.0000       5           OK
+       100     181,434  RCLSolve              198.9211          4.7176     -318.0176        0.0000       5           OK
+       100     181,434  SketchRefine               N/A             N/A           N/A           N/A       0      TIMEOUT
+       150     272,134  RCLSolve              235.6548         13.2462     -301.1387        0.0000       5           OK
+       150     272,134  SketchRefine               N/A             N/A           N/A           N/A       0      SKIPPED
+       200     351,220  RCLSolve              239.4199         12.7842     -548.3969        0.0000       5           OK
+       200     351,220  SketchRefine               N/A             N/A           N/A           N/A       0      SKIPPED
