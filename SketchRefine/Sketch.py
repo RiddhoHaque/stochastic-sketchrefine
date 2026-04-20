@@ -41,6 +41,7 @@ class Sketch:
         
         self.__scenarios = dict()
         self.__values = dict()
+        self.__correlation_cache = dict()
         self.__constraints_for_attribute = dict()
         self.__stochastic_attributes = \
             self.__get_stochastic_attributes()
@@ -50,16 +51,9 @@ class Sketch:
 
         for attribute in self.__stochastic_attributes:
             self.__scenarios[attribute] = \
-                RepresentativeScenarioGeneratorWithoutCorrelation(
-                    relation=self.__query.get_relation(),
-                    attr=attribute,
-                    scenario_generator=\
-                        self.__dbInfo.\
-                            get_variable_generator_function(
-                                attribute),
-                    base_predicate=self.__partition_filter,
-                    duplicates=self.__max_no_of_duplicates
-                ).generate_scenarios(
+                self.__generate_representative_scenarios(
+                    attribute=attribute,
+                    duplicate_vector=self.__max_no_of_duplicates,
                     seed=Hyperparameters.INIT_SEED,
                     no_of_scenarios=self.__no_of_opt_scenarios
                 )
@@ -237,6 +231,94 @@ class Sketch:
                 self.__query.get_objective().\
                     get_attribute_name())
         return attributes
+
+    def __is_cvar_objective_attribute(
+        self, attribute: str
+    ) -> bool:
+        objective = self.__query.get_objective()
+        return objective.is_cvar_objective() and \
+            objective.get_attribute_name() == attribute
+
+    def __get_partition_correlations(
+        self, attribute: str
+    ) -> dict[int, list[float]]:
+        if attribute in self.__correlation_cache:
+            return self.__correlation_cache[attribute]
+
+        correlations = {pid: [] for pid in self.__partition_ids}
+        if not self.__dbInfo.has_inter_tuple_correlations():
+            self.__correlation_cache[attribute] = correlations
+            return correlations
+
+        correlation_relation = \
+            Relation_Prefixes.INIT_CORRELATION_PREFIX + \
+            self.__query.get_relation()
+        sql = "SELECT partition_id, duplicates, init_corr FROM " + \
+            correlation_relation + " WHERE attribute='" + \
+            attribute + "' AND partition_id IN (" + \
+            ','.join(str(pid) for pid in self.__partition_ids) + \
+            ") ORDER BY partition_id, duplicates;"
+
+        PgConnection.Execute(sql)
+        tuples = PgConnection.Fetch()
+        for partition_id, _, init_corr in tuples:
+            if partition_id in correlations:
+                correlations[partition_id].append(init_corr)
+
+        self.__correlation_cache[attribute] = correlations
+        return correlations
+
+    def __get_correlation_coefficients(
+        self, attribute: str,
+        duplicate_vector: list[int]
+    ) -> list[float]:
+        correlations = self.__get_partition_correlations(attribute)
+        coefficients = []
+        for idx, partition_id in enumerate(self.__partition_ids):
+            duplicate_count = duplicate_vector[idx]
+            partition_correlations = correlations.get(partition_id, [])
+            if duplicate_count <= 0 or len(partition_correlations) == 0:
+                coefficients.append(0.0)
+                continue
+            corr_idx = min(duplicate_count, len(partition_correlations)) - 1
+            coefficients.append(partition_correlations[corr_idx])
+        return coefficients
+
+    def __generate_representative_scenarios(
+        self, attribute: str,
+        duplicate_vector: list[int],
+        seed: int,
+        no_of_scenarios: int
+    ):
+        if self.__is_cvar_objective_attribute(attribute) and \
+                self.__dbInfo.has_inter_tuple_correlations():
+            return RepresentativeScenarioGenerator(
+                relation=self.__query.get_relation(),
+                attr=attribute,
+                dbInfo=self.__dbInfo,
+                base_predicate=self.__partition_filter,
+                duplicate_vector=duplicate_vector,
+                correlation_coeff=self.__get_correlation_coefficients(
+                    attribute, duplicate_vector
+                )
+            ).generate_scenarios(
+                seed=seed,
+                no_of_scenarios=no_of_scenarios
+            )
+
+        return RepresentativeScenarioGeneratorWithoutCorrelation(
+            relation=self.__query.get_relation(),
+            attr=attribute,
+            scenario_generator=\
+                self.__dbInfo.\
+                    get_variable_generator_function(
+                        attribute),
+            base_predicate=self.__partition_filter,
+            duplicates=duplicate_vector
+        ).generate_scenarios(
+            seed=seed,
+            no_of_scenarios=no_of_scenarios
+        )
     
 
     def __get_duplicate_vector(self, alpha: float):
@@ -445,16 +527,9 @@ class Sketch:
             self.__rebuild_partition_id_in_duplicate_vector()
             for attribute in self.__stochastic_attributes:
                 self.__scenarios[attribute] = \
-                    RepresentativeScenarioGeneratorWithoutCorrelation(
-                        relation=self.__query.get_relation(),
-                        attr=attribute,
-                        scenario_generator=\
-                            self.__dbInfo.\
-                                get_variable_generator_function(
-                                    attribute),
-                        base_predicate=self.__partition_filter,
-                        duplicates=self.__duplicate_vector
-                    ).generate_scenarios(
+                    self.__generate_representative_scenarios(
+                        attribute=attribute,
+                        duplicate_vector=self.__duplicate_vector,
                         seed=Hyperparameters.INIT_SEED,
                         no_of_scenarios=self.__no_of_opt_scenarios
                     )
@@ -491,22 +566,17 @@ class Sketch:
                 self.__no_of_opt_scenarios - previous_opt_scenarios
 
             for attribute in self.__stochastic_attributes:
+                new_scenarios = self.__generate_representative_scenarios(
+                    attribute=attribute,
+                    duplicate_vector=self.__duplicate_vector,
+                    seed=SeedManager.get_next_seed(),
+                    no_of_scenarios=required_optimization_scenarios
+                )
                 self.__scenarios[attribute] = \
                     np.concatenate(
-                        (self.__scenarios[attribute],
-                        RepresentativeScenarioGeneratorWithoutCorrelation(
-                            relation=self.__query.get_relation(),
-                            attr=attribute,
-                            scenario_generator=\
-                                self.__dbInfo.\
-                                    get_variable_generator_function(
-                                        attribute),
-                            base_predicate=self.__partition_filter,
-                            duplicates=self.__duplicate_vector
-                        ).generate_scenarios(
-                            seed=SeedManager.get_next_seed(),
-                            no_of_scenarios=required_optimization_scenarios
-                        )), axis=1)
+                        (self.__scenarios[attribute], new_scenarios),
+                        axis=1
+                    )
 
             self.__solver.update_scenarios(
                 updated_scenarios=self.__scenarios,

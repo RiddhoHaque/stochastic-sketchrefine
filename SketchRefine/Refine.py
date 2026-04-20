@@ -60,6 +60,7 @@ class Refine:
         self.__deterministic_attributes = \
             self.__get_deterministic_attributes()
         self.__dbInfo = dbInfo
+        self.__correlation_cache = dict()
 
         self.__partition_optimization_scenarios = dict()
         self.__partition_validation_scenarios = dict()
@@ -109,16 +110,14 @@ class Refine:
                         )
 
                     self.__partition_optimization_scenarios[attr][partition] = \
-                        RepresentativeScenarioGeneratorWithoutCorrelation(
-                            relation=self.__query.get_relation(),
-                            attr=attr, 
-                            scenario_generator=\
-                                self.__dbInfo.get_variable_generator_function(attr),
-                            base_predicate='partition_id=' + str(partition),
-                            duplicates=[num_duplicates]
-                        ).generate_scenarios(
+                        self.__generate_partition_representative_scenarios(
+                            attribute=attr,
+                            partition=partition,
+                            num_duplicates=num_duplicates,
                             seed=Hyperparameters.INIT_SEED,
-                            no_of_scenarios=no_of_optimization_scenarios
+                            no_of_scenarios=no_of_optimization_scenarios,
+                            use_correlation=\
+                                self.__is_cvar_objective_attribute(attr)
                         )
                     
                     if self.__dbInfo.has_inter_tuple_correlations():
@@ -328,9 +327,99 @@ class Refine:
                 self.__query.get_objective().get_stochasticity() \
                 == Stochasticity.DETERMINISTIC:
             attributes.add(
-                self.__query.get_objective().\
+                    self.__query.get_objective().\
                     get_attribute_name())
         return attributes
+
+    def __is_cvar_objective_attribute(
+        self, attribute: str
+    ) -> bool:
+        objective = self.__query.get_objective()
+        return objective.is_cvar_objective() and \
+            objective.get_attribute_name() == attribute
+
+    def __get_partition_correlations(
+        self, attribute: str
+    ) -> dict[int, list[float]]:
+        if attribute in self.__correlation_cache:
+            return self.__correlation_cache[attribute]
+
+        partition_ids = [
+            partition_id
+            for partition_group in self.__partition_groups
+            for partition_id in partition_group
+        ]
+        correlations = {pid: [] for pid in partition_ids}
+        if not self.__dbInfo.has_inter_tuple_correlations():
+            self.__correlation_cache[attribute] = correlations
+            return correlations
+
+        correlation_relation = \
+            Relation_Prefixes.INIT_CORRELATION_PREFIX + \
+            self.__query.get_relation()
+        sql = "SELECT partition_id, duplicates, init_corr FROM " + \
+            correlation_relation + " WHERE attribute='" + attribute + \
+            "' AND partition_id IN (" + \
+            ','.join(str(pid) for pid in partition_ids) + \
+            ") ORDER BY partition_id, duplicates;"
+
+        PgConnection.Execute(sql)
+        tuples = PgConnection.Fetch()
+        for partition_id, _, init_corr in tuples:
+            if partition_id in correlations:
+                correlations[partition_id].append(init_corr)
+
+        self.__correlation_cache[attribute] = correlations
+        return correlations
+
+    def __get_correlation_for_partition(
+        self, attribute: str,
+        partition: int,
+        num_duplicates: int
+    ) -> float:
+        if num_duplicates <= 0:
+            return 0.0
+        correlations = self.__get_partition_correlations(attribute)
+        partition_correlations = correlations.get(partition, [])
+        if len(partition_correlations) == 0:
+            return 0.0
+        corr_idx = min(num_duplicates, len(partition_correlations)) - 1
+        return partition_correlations[corr_idx]
+
+    def __generate_partition_representative_scenarios(
+        self, attribute: str,
+        partition: int,
+        num_duplicates: int,
+        seed: int,
+        no_of_scenarios: int,
+        use_correlation: bool
+    ):
+        if use_correlation and self.__dbInfo.has_inter_tuple_correlations():
+            return RepresentativeScenarioGenerator(
+                relation=self.__query.get_relation(),
+                attr=attribute,
+                dbInfo=self.__dbInfo
+            ).generate_scenarios(
+                seed=seed,
+                no_of_scenarios=no_of_scenarios,
+                pid=partition,
+                duplicates_to_use=num_duplicates,
+                correlation_to_use=self.__get_correlation_for_partition(
+                    attribute, partition, num_duplicates
+                )
+            )
+
+        return RepresentativeScenarioGeneratorWithoutCorrelation(
+            relation=self.__query.get_relation(),
+            attr=attribute,
+            scenario_generator=\
+                self.__dbInfo.get_variable_generator_function(attribute),
+            base_predicate='partition_id=' + str(partition),
+            duplicates=[num_duplicates]
+        ).generate_scenarios(
+            seed=seed,
+            no_of_scenarios=no_of_scenarios
+        )
 
 
     def get_optimizer_runtime(self):
@@ -391,16 +480,14 @@ class Refine:
                                 )
 
                             self.__partition_optimization_scenarios[attr][partition] = \
-                                RepresentativeScenarioGeneratorWithoutCorrelation(
-                                    relation=self.__query.get_relation(),
-                                    attr=attr, 
-                                    scenario_generator=\
-                                        self.__dbInfo.get_variable_generator_function(attr),
-                                    base_predicate='partition_id=' + str(partition),
-                                    duplicates=[num_duplicates]
-                                ).generate_scenarios(
+                                self.__generate_partition_representative_scenarios(
+                                    attribute=attr,
+                                    partition=partition,
+                                    num_duplicates=num_duplicates,
                                     seed=Hyperparameters.INIT_SEED,
-                                    no_of_scenarios=self.__no_of_optimization_scenarios
+                                    no_of_scenarios=self.__no_of_optimization_scenarios,
+                                    use_correlation=\
+                                        self.__is_cvar_objective_attribute(attr)
                                 )
 
                             if self.__dbInfo.has_inter_tuple_correlations():
