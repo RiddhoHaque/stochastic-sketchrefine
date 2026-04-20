@@ -1,3 +1,4 @@
+import math
 import numpy as np
 
 from DbInfo.DbInfo import DbInfo
@@ -43,6 +44,7 @@ class Refine:
             sketch_objective_value
         self.__sketch_package =\
             sketch_package
+        self.__is_linear_relaxation = linear_relaxation
         
         self.__query = query
         self.__tuples_in_partition =\
@@ -78,9 +80,10 @@ class Refine:
 
             for partition_group in self.__partition_groups:
                 for partition in partition_group:
-                    num_duplicates = int(self.__sketch_package[partition])
-                    if len(self.__tuples_in_partition[partition]) < num_duplicates:
-                        num_duplicates = int(len(self.__tuples_in_partition[partition]))
+                    num_duplicates = \
+                        self.__get_materialized_duplicate_count(
+                            partition
+                        )
                     self.__partition_values[attr][partition] = \
                         RepresentativeValueGenerator(
                             relation=self.__query.get_relation(),
@@ -100,10 +103,10 @@ class Refine:
 
             for partition_group in self.__partition_groups:
                 for partition in partition_group:
-                    
-                    num_duplicates = int(self.__sketch_package[partition])
-                    if len(self.__tuples_in_partition[partition]) < num_duplicates:
-                        num_duplicates = len(self.__tuples_in_partition[partition])
+                    num_duplicates = \
+                        self.__get_materialized_duplicate_count(
+                            partition
+                        )
 
                     self.__partition_optimization_scenarios[attr][partition] = \
                         RepresentativeScenarioGeneratorWithoutCorrelation(
@@ -141,27 +144,91 @@ class Refine:
                                 duplicates=[num_duplicates]
                             ).generate_scenarios(
                                 seed=Hyperparameters.VALIDATION_SEED,
-                                no_of_scenarios=Hyperparameters.NO_OF_VALIDATION_SCENARIOS
-                            )
+                                        no_of_scenarios=Hyperparameters.NO_OF_VALIDATION_SCENARIOS
+                                    )
                                         
         for partition_group in self.__partition_groups:
             for partition in partition_group:
-                num_duplicates = int(self.__sketch_package[partition])
-                if len(self.__tuples_in_partition[partition]) < num_duplicates:
-                    num_duplicates = len(self.__tuples_in_partition[partition])
-                if num_duplicates == 0:
-                    self.__partition_variable_multiplicity[partition] = []
-                else:
-                    self.__partition_variable_multiplicity[partition] = [
-                        int(self.__sketch_package[partition]) // num_duplicates
-                        for _ in range(num_duplicates)
-                    ]
-                    for _ in range(int(self.__sketch_package[partition]) % num_duplicates):
-                        self.__partition_variable_multiplicity[partition][_] += 1
-        self.__is_linear_relaxation = linear_relaxation
+                self.__partition_variable_multiplicity[partition] = \
+                    self.__get_partition_variable_multiplicities(
+                        partition
+                    )
         self.__check_feasibility = check_feasibility
         self.__optimize_lcvar = optimize_lcvar
         self.__gurobi_env = gurobi_env
+
+    def __to_integral_count(self, multiplicity: float) -> int:
+        rounded = round(multiplicity)
+        if abs(multiplicity - rounded) <= 1e-6:
+            return int(rounded)
+        return int(multiplicity)
+
+    def __get_materialized_duplicate_count(
+        self,
+        partition: int
+    ) -> int:
+        tuple_count = len(self.__tuples_in_partition[partition])
+        if tuple_count == 0:
+            return 0
+
+        multiplicity = float(self.__sketch_package[partition])
+        if multiplicity <= 1e-9:
+            return 0
+
+        if self.__is_linear_relaxation:
+            return min(
+                tuple_count,
+                max(1, int(math.ceil(multiplicity - 1e-9)))
+            )
+
+        return min(
+            tuple_count,
+            max(0, self.__to_integral_count(multiplicity))
+        )
+
+    def __get_partition_variable_multiplicities(
+        self,
+        partition: int
+    ) -> list[float | int]:
+        num_duplicates = self.__get_materialized_duplicate_count(
+            partition
+        )
+        if num_duplicates == 0:
+            return []
+
+        multiplicity = float(self.__sketch_package[partition])
+        if not self.__is_linear_relaxation:
+            total = self.__to_integral_count(multiplicity)
+            multiplicities = [
+                total // num_duplicates
+                for _ in range(num_duplicates)
+            ]
+            for idx in range(total % num_duplicates):
+                multiplicities[idx] += 1
+            return multiplicities
+
+        base = math.floor(multiplicity / num_duplicates)
+        multiplicities = [
+            float(base) for _ in range(num_duplicates)
+        ]
+        remaining = multiplicity - (base * num_duplicates)
+        idx = 0
+        while remaining > 1e-9 and idx < num_duplicates:
+            increment = min(1.0, remaining)
+            multiplicities[idx] += increment
+            remaining -= increment
+            idx += 1
+        if remaining > 1e-9:
+            multiplicities[-1] += remaining
+        return multiplicities
+
+    def __normalize_tuple_multiplicity(
+        self,
+        multiplicity: float
+    ) -> float | int:
+        if self.__is_linear_relaxation:
+            return multiplicity
+        return self.__to_integral_count(multiplicity)
 
     def get_tuples_in_each_partition(self):
         partition_predicate = ''
@@ -273,11 +340,7 @@ class Refine:
         return self.__total_optimization_calls
 
     def solve(self):
-        forward_bins = []
-        self.__partition_groups.reverse()
-
-        for partition_group in self.__partition_groups:
-            forward_bins.append(partition_group)
+        forward_bins = list(reversed(self.__partition_groups))
 
         chosen_tuples_per_bin = []
 
@@ -303,10 +366,10 @@ class Refine:
                             del self.__chosen_tuple_values[attr][chosen_tuple]
 
                         for partition in forward_bins[group_index]:
-
-                            num_duplicates = int(self.__sketch_package[partition])
-                            if len(self.__tuples_in_partition[partition]) < num_duplicates:
-                                num_duplicates = len(self.__tuples_in_partition[partition])
+                            num_duplicates = \
+                                self.__get_materialized_duplicate_count(
+                                    partition
+                                )
                             
                             self.__partition_values[attr][partition] = \
                                 RepresentativeValueGenerator(
@@ -322,10 +385,10 @@ class Refine:
                             del self.__chosen_tuple_validation_scenarios[attr][chosen_tuple]
                         
                         for partition in forward_bins[group_index]:
-
-                            num_duplicates = int(self.__sketch_package[partition])
-                            if len(self.__tuples_in_partition[partition]) < num_duplicates:
-                                num_duplicates = len(self.__tuples_in_partition[partition])
+                            num_duplicates = \
+                                self.__get_materialized_duplicate_count(
+                                    partition
+                                )
 
                             self.__partition_optimization_scenarios[attr][partition] = \
                                 RepresentativeScenarioGeneratorWithoutCorrelation(
@@ -367,15 +430,10 @@ class Refine:
                                     )
 
                     for partition in forward_bins[group_index]:
-                        num_duplicates = int(self.__sketch_package[partition])
-                        if len(self.__tuples_in_partition[partition]) < num_duplicates:
-                            num_duplicates = len(self.__tuples_in_partition[partition])
-                        self.__partition_variable_multiplicity[partition] = [
-                            int(self.__sketch_package[partition]) // num_duplicates
-                            for _ in range(num_duplicates)
-                        ]
-                        for _ in range(int(self.__sketch_package[partition]) % num_duplicates):
-                            self.__partition_variable_multiplicity[partition][_] += 1
+                        self.__partition_variable_multiplicity[partition] = \
+                            self.__get_partition_variable_multiplicities(
+                                partition
+                            )
 
                     chosen_tuples_per_bin.pop()
                     group_index -= 1
@@ -476,6 +534,8 @@ class Refine:
             no_of_validation_scenarios=self.__no_of_validation_scenarios,
             partition_validation_scenarios=filtered_partition_val_scenarios,
             chosen_tuple_validation_scenarios=self.__chosen_tuple_validation_scenarios,
+            partition_values=filtered_partition_values,
+            chosen_tuple_values=self.__chosen_tuple_values,
             partition_variable_multiplicities=filtered_partition_var_multiplicity,
             chosen_tuple_multiplicities=self.__chosen_tuple_multiplicity
         )
@@ -539,7 +599,9 @@ class Refine:
         
         for tuple_id in refined_package:
             self.__chosen_tuple_multiplicity[tuple_id] = \
-                int(refined_package[tuple_id])
+                self.__normalize_tuple_multiplicity(
+                    refined_package[tuple_id]
+                )
             
             for attr in self.__stochastic_attributes:
                 self.__chosen_tuple_optimization_scenarios[attr][tuple_id] =\

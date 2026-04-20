@@ -16,6 +16,8 @@ from Utils.RelationalOperators import RelationalOperators
 from Utils.Relation_Prefixes import Relation_Prefixes
 from Utils.TailType import TailType
 from Utils.ObjectiveType import ObjectiveType
+from Utils.Stochasticity import Stochasticity
+from ValueGenerator.ValueGenerator import ValueGenerator
 
 
 class RefineValidator:
@@ -26,6 +28,8 @@ class RefineValidator:
         no_of_validation_scenarios: int,
         partition_validation_scenarios,
         chosen_tuple_validation_scenarios,
+        partition_values,
+        chosen_tuple_values,
         partition_variable_multiplicities,
         chosen_tuple_multiplicities
     ):
@@ -35,9 +39,12 @@ class RefineValidator:
             no_of_validation_scenarios
         self.__partition_validation_scenarios = partition_validation_scenarios
         self.__chosen_tuple_validation_scenarios = chosen_tuple_validation_scenarios
+        self.__partition_values = partition_values
+        self.__chosen_tuple_values = chosen_tuple_values
         self.__partition_variable_multiplicities = partition_variable_multiplicities
         self.__chosen_tuple_multiplicities = chosen_tuple_multiplicities
         self.__scenario_cache = {}
+        self.__value_cache = {}
 
     def __get_scenarios_and_ids(
         self, package_dict, attribute
@@ -68,6 +75,32 @@ class RefineValidator:
         self.__scenario_cache[cache_key] = result
         return result
 
+    def __get_values_and_ids(
+        self, package_dict, attribute
+    ):
+        cache_key = (attribute, tuple(sorted(package_dict.items())))
+        if cache_key in self.__value_cache:
+            return self.__value_cache[cache_key]
+        base_predicate = ''
+        ids_with_multiplicities = []
+        for id in package_dict:
+            ids_with_multiplicities.append((id, package_dict[id]))
+            if len(base_predicate) > 0:
+                base_predicate += " or "
+            base_predicate += " id = " + str(id)
+        ids_with_multiplicities.sort()
+        if len(package_dict) > 0:
+            values = ValueGenerator(
+                relation=self.__query.get_relation(),
+                base_predicate=base_predicate,
+                attribute=attribute
+            ).get_values()
+        else:
+            values = []
+        result = (values, ids_with_multiplicities)
+        self.__value_cache[cache_key] = result
+        return result
+
     def __compute_scenario_scores(self, attribute, scenarios, ids_with_multiplicities):
         rows = list(scenarios)
         mults_list = [m for _, m in ids_with_multiplicities]
@@ -94,23 +127,48 @@ class RefineValidator:
         if len(package_dict) == 0:
             return 0
 
-        attribute = self.__query.get_objective().get_attribute_name()
-        scenarios, ids_with_multiplicities = self.__get_scenarios_and_ids(
-            package_dict, attribute)
+        objective = self.__query.get_objective()
+        attribute = objective.get_attribute_name()
 
-        if self.__query.get_objective().is_cvar_objective():
+        if objective.is_cvar_objective():
+            scenarios, ids_with_multiplicities = self.__get_scenarios_and_ids(
+                package_dict, attribute)
             scenario_scores = self.__compute_scenario_scores(
                 attribute, scenarios, ids_with_multiplicities)
-            tail_type = self.__query.get_objective().get_tail_type()
+            tail_type = objective.get_tail_type()
             if tail_type == TailType.HIGHEST:
                 scenario_scores = np.sort(scenario_scores)[::-1]
             else:
                 scenario_scores = np.sort(scenario_scores)
             k = max(1, int(np.floor(
                 self.__no_of_validation_scenarios *
-                self.__query.get_objective().get_percentage_of_scenarios()
+                objective.get_percentage_of_scenarios()
             )))
             return float(np.average(scenario_scores[:k]))
+
+        if objective.get_stochasticity() == Stochasticity.DETERMINISTIC:
+            values, ids_with_multiplicities = self.__get_values_and_ids(
+                package_dict, attribute)
+            objective_value = 0.0
+            for idx in range(len(values)):
+                _, multiplicity = ids_with_multiplicities[idx]
+                objective_value += values[idx][0] * multiplicity
+
+            for partition in self.__partition_values[attribute]:
+                for dup_idx, value in enumerate(
+                    self.__partition_values[attribute][partition]
+                ):
+                    objective_value += value * \
+                        self.__partition_variable_multiplicities[partition][dup_idx]
+
+            for tuple_id in self.__chosen_tuple_values[attribute]:
+                for value in self.__chosen_tuple_values[attribute][tuple_id]:
+                    objective_value += value[0] * \
+                        self.__chosen_tuple_multiplicities[tuple_id]
+            return objective_value
+
+        scenarios, ids_with_multiplicities = self.__get_scenarios_and_ids(
+            package_dict, attribute)
 
         idx = 0
         objective_value = 0
@@ -315,6 +373,10 @@ class RefineValidator:
         )
         
         if objective.get_objective_type() == ObjectiveType.MAXIMIZATION:
-            return objective_value >= (1-epsilon)*upper_bound
+            if upper_bound >= 0:
+                return objective_value >= (1 - epsilon) * upper_bound
+            return objective_value >= (1 + epsilon) * upper_bound
         
-        return objective_value <= (1 + epsilon)*upper_bound
+        if upper_bound >= 0:
+            return objective_value <= (1 + epsilon) * upper_bound
+        return objective_value <= (1 - epsilon) * upper_bound

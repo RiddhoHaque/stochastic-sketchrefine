@@ -947,7 +947,17 @@ class RefineRCLSolve:
                 if probabilistically_constrained:
                     if stochastic_constraint_index not in trivial_constraints:
                         if constraint.is_cvar_constraint():
-                            cvarified_constraint = constraint
+                            cvarified_constraint = CVaRConstraint()
+                            cvarified_constraint.set_attribute_name(
+                                constraint.get_attribute_name())
+                            cvarified_constraint.set_percentage_of_scenarios(
+                                constraint.get_percentage_of_scenarios())
+                            cvarified_constraint.set_tail_type(
+                                'l' if constraint.get_tail_type() == TailType.LOWEST else 'h')
+                            cvarified_constraint.set_inequality_sign(
+                                '>' if constraint.get_inequality_sign() == RelationalOperators.GREATER_THAN_OR_EQUAL_TO else '<')
+                            cvarified_constraint.set_sum_limit(
+                                cvar_thresholds[stochastic_constraint_index])
                         else:
                             cvarified_constraint = \
                                 self.__get_cvarified_constraint(
@@ -955,7 +965,7 @@ class RefineRCLSolve:
                                     cvar_threshold=cvar_thresholds[
                                         stochastic_constraint_index]
                                 )
-                        
+
                         self.__add_lcvar_constraint_to_model(
                             risk_constraint=constraint,
                             cvarified_constraint=cvarified_constraint,
@@ -1238,15 +1248,6 @@ class RefineRCLSolve:
                       ' lower bounds as heuristic anchors.')
                 return cvar_lower_bounds, is_model_setup, False, best_feasible_package, best_feasible_objective
 
-            package_with_indices = package
-            unacceptable_diff, _ = \
-                self.__is_objective_value_relative_diff_high(
-                    package, package_with_indices
-                )
-            if unacceptable_diff and can_add_scenarios:
-                print('[LowerRepair] Needs more scenarios (obj diff)')
-                return cvar_lower_bounds, is_model_setup, True, best_feasible_package, best_feasible_objective
-
             violated_constraints = []
             stochastic_constraint_index = 0
             for constraint in self.__get_searchable_constraints():
@@ -1521,7 +1522,17 @@ class RefineRCLSolve:
                     if constraint.is_risk_constraint() and \
                             stochastic_constraint_index not in trivial_constraints:
                         if constraint.is_cvar_constraint():
-                            cvarified_constraint = constraint
+                            cvarified_constraint = CVaRConstraint()
+                            cvarified_constraint.set_attribute_name(
+                                constraint.get_attribute_name())
+                            cvarified_constraint.set_percentage_of_scenarios(
+                                constraint.get_percentage_of_scenarios())
+                            cvarified_constraint.set_tail_type(
+                                'l' if constraint.get_tail_type() == TailType.LOWEST else 'h')
+                            cvarified_constraint.set_inequality_sign(
+                                '>' if constraint.get_inequality_sign() == RelationalOperators.GREATER_THAN_OR_EQUAL_TO else '<')
+                            cvarified_constraint.set_sum_limit(
+                                cvar_thresholds[stochastic_constraint_index])
                         else:
                             cvarified_constraint = \
                                 self.__get_cvarified_constraint(
@@ -1763,6 +1774,11 @@ class RefineRCLSolve:
                     )
                 
                 cvar_upper_bounds.append(cvar_threshold)
+                expected_sum = \
+                    self.__get_expected_sum_among_optimization_scenarios(
+                        probabilistically_unconstrained_package,
+                        constraint.get_attribute_name()
+                    )
                 cvar_lower_bounds.append(expected_sum)
                 
                 no_of_scenarios_to_consider = \
@@ -1805,16 +1821,21 @@ class RefineRCLSolve:
         
         for idx in range(len(cvar_lower_bounds)):
             if cvar_lower_bounds[idx] > cvar_upper_bounds[idx]:
-                cvar_upper_bounds[idx] -= cvar_upper_bounds[idx]
+                cvar_upper_bounds[idx] -= (
+                    cvar_lower_bounds[idx] - cvar_upper_bounds[idx]
+                )
             else:
-                cvar_upper_bounds[idx] += cvar_upper_bounds[idx]
+                cvar_upper_bounds[idx] -= (
+                    cvar_lower_bounds[idx] - cvar_upper_bounds[idx]
+                )
         return cvar_upper_bounds, cvar_lower_bounds, max_no_of_scenarios_to_consider,\
             min_no_of_scenarios_to_consider, trivial_constraints
 
 
     def solve(self, can_add_scenarios = False):
         self.__metrics.start_execution()
-        if self.__solve_lp_first:
+        if self.__solve_lp_first and \
+                self.__query.get_objective().is_cvar_objective():
             result = self.__solve_with_lp_first_refine()
             self.__metrics.end_execution(
                 result[1] if result[0] is not None else 0.0,

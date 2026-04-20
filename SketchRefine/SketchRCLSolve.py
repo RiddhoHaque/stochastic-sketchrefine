@@ -73,7 +73,7 @@ class SketchRCLSolve:
         bisection_threshold: float,
         partition_sizes: list[int],
         duplicate_vector: list[int],
-        partition_id_for_each_index: list[int],
+        partition_id_for_each_index: dict[int, int],
         check_feasibility: bool = False,
         optimize_lcvar: bool = False,
         gurobi_env = None,
@@ -178,9 +178,12 @@ class SketchRCLSolve:
         self.__duplicate_vector = updated_duplicate_vector
         self.__no_of_vars = updated_no_of_vars
         self.__ids = [_ for _ in range(updated_no_of_vars)]
+        self.__partition_ids_for_each_index = \
+            partition_id_in_duplicate_vector
         self.__validator.update_partition_id_in_duplicate_vector(
             partition_id_in_duplicate_vector
         )
+        self.__opt_scenario_scores_cache = {}
     
     def update_scenarios(
         self, updated_scenarios, no_of_scenarios
@@ -858,7 +861,17 @@ class SketchRCLSolve:
                     if stochastic_constraint_index not in trivial_constraints:
                         print('Risk constraint is not trivial')
                         if constraint.is_cvar_constraint():
-                            cvarified_constraint = constraint
+                            cvarified_constraint = CVaRConstraint()
+                            cvarified_constraint.set_attribute_name(
+                                constraint.get_attribute_name())
+                            cvarified_constraint.set_percentage_of_scenarios(
+                                constraint.get_percentage_of_scenarios())
+                            cvarified_constraint.set_tail_type(
+                                'l' if constraint.get_tail_type() == TailType.LOWEST else 'h')
+                            cvarified_constraint.set_inequality_sign(
+                                '>' if constraint.get_inequality_sign() == RelationalOperators.GREATER_THAN_OR_EQUAL_TO else '<')
+                            cvarified_constraint.set_sum_limit(
+                                cvar_thresholds[stochastic_constraint_index])
                         else:
                             print('CVaRifying VaR constraint')
                             cvarified_constraint = \
@@ -1056,10 +1069,10 @@ class SketchRCLSolve:
 
 
     def __get_package_with_indices(self):
-        return self.__get_package()
+        return self.__extract_package_from_model()
     
     def __get_package_tuple_partitions(self):
-        package_dict = self.__get_package()
+        package_dict = self.__extract_package_from_model()
         partition_package_dict = dict()
         for id in package_dict:
             pid = self.__partition_ids_for_each_index[id]
@@ -1074,9 +1087,10 @@ class SketchRCLSolve:
     ) -> float:
         if package_with_indices is None:
             return 0
-        attr = self.__query.get_objective().get_attribute_name()
+        objective = self.__query.get_objective()
+        attr = objective.get_attribute_name()
 
-        if self.__query.get_objective().is_cvar_objective():
+        if objective.is_cvar_objective():
             idxs = list(package_with_indices.keys())
             mults = np.array([package_with_indices[i] for i in idxs])
             mat = np.array([
@@ -1084,21 +1098,24 @@ class SketchRCLSolve:
                 for i in idxs
             ])
             scenario_scores = mat.T @ mults
-            tail_type = self.__query.get_objective().get_tail_type()
+            tail_type = objective.get_tail_type()
             if tail_type == TailType.HIGHEST:
                 scenario_scores = np.sort(scenario_scores)[::-1]
             else:
                 scenario_scores = np.sort(scenario_scores)
             k = max(1, int(np.floor(
-                self.__query.get_objective().get_percentage_of_scenarios() *
+                objective.get_percentage_of_scenarios() *
                 self.__no_of_scenarios
             )))
             return float(np.average(scenario_scores[:k]))
 
         sum = 0
         for idx in package_with_indices:
-            sum += np.average(self.__scenarios[attr][idx]) * \
-                package_with_indices[idx]
+            if objective.get_stochasticity() == Stochasticity.DETERMINISTIC:
+                coefficient = self.__values[attr][idx]
+            else:
+                coefficient = np.average(self.__scenarios[attr][idx])
+            sum += coefficient * package_with_indices[idx]
 
         return sum
     
@@ -1126,7 +1143,7 @@ class SketchRCLSolve:
         if diff < 0:
             diff *= -1
 
-        rel_diff = diff / (objective_value_validation_scenarios
+        rel_diff = diff / (abs(objective_value_validation_scenarios)
             + 0.00001)
         
         if rel_diff > self.__sampling_tolerance:
@@ -1145,12 +1162,20 @@ class SketchRCLSolve:
 
         if objective.get_objective_type() == \
             ObjectiveType.MAXIMIZATION:
+            if objective_upper_bound >= 0:
+                return objective_value >= \
+                    (1 - self.__approximation_bound) *\
+                        objective_upper_bound
             return objective_value >= \
-                (1 - self.__approximation_bound) *\
+                (1 + self.__approximation_bound) *\
                     objective_upper_bound
         
+        if objective_upper_bound >= 0:
+            return objective_value <= \
+                (1 + self.__approximation_bound) *\
+                    objective_upper_bound
         return objective_value <= \
-            (1 + self.__approximation_bound) *\
+            (1 - self.__approximation_bound) *\
                 objective_upper_bound
     
 
@@ -1608,7 +1633,17 @@ class SketchRCLSolve:
                                   mid_no_of_scenarios_to_consider[stochastic_constraint_index],
                                   'scenarios from each tuple')
                             if constraint.is_cvar_constraint():
-                                cvarified_constraint = constraint
+                                cvarified_constraint = CVaRConstraint()
+                                cvarified_constraint.set_attribute_name(
+                                    constraint.get_attribute_name())
+                                cvarified_constraint.set_percentage_of_scenarios(
+                                    constraint.get_percentage_of_scenarios())
+                                cvarified_constraint.set_tail_type(
+                                    'l' if constraint.get_tail_type() == TailType.LOWEST else 'h')
+                                cvarified_constraint.set_inequality_sign(
+                                    '>' if constraint.get_inequality_sign() == RelationalOperators.GREATER_THAN_OR_EQUAL_TO else '<')
+                                cvarified_constraint.set_sum_limit(
+                                    cvar_thresholds[stochastic_constraint_index])
                             else:
                                 cvarified_constraint = \
                                     self.__get_cvarified_constraint(
@@ -1963,9 +1998,13 @@ class SketchRCLSolve:
 
         for idx in range(len(cvar_lower_bounds)):
             if cvar_lower_bounds[idx] > cvar_upper_bounds[idx]:
-                cvar_upper_bounds[idx] -= cvar_upper_bounds[idx]
+                cvar_upper_bounds[idx] -= (
+                    cvar_lower_bounds[idx] - cvar_upper_bounds[idx]
+                )
             else:
-                cvar_upper_bounds[idx] += cvar_upper_bounds[idx]
+                cvar_upper_bounds[idx] -= (
+                    cvar_lower_bounds[idx] - cvar_upper_bounds[idx]
+                )
         return cvar_upper_bounds, cvar_lower_bounds,\
             max_no_of_scenarios_to_consider,\
             min_no_of_scenarios_to_consider,\
@@ -1974,7 +2013,8 @@ class SketchRCLSolve:
 
     def solve(self, can_add_scenarios = False):
         self.__metrics.start_execution()
-        if self.__solve_lp_first:
+        if self.__solve_lp_first and \
+                self.__query.get_objective().is_cvar_objective():
             result = self.__solve_with_lp_first()
             self.__metrics.end_execution(
                 result[1] if result[0] is not None else 0.0,
@@ -1992,8 +2032,11 @@ class SketchRCLSolve:
 
         probabilistically_unconstrained_package = \
             self.__get_package()
-        print('Probabilistically unconstrained package:',
-            self.__get_package_tuple_partitions())
+        if probabilistically_unconstrained_package is not None:
+            print('Probabilistically unconstrained package:',
+                self.__get_package_tuple_partitions())
+        else:
+            print('Probabilistically unconstrained package: None')
         if probabilistically_unconstrained_package is None:
             print('Probabilistically unconstrained'
                   'problem is infeasible')

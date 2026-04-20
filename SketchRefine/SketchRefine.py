@@ -29,6 +29,11 @@ class SketchRefine:
         self.__dbInfo = dbInfo
         self.__is_lp_relaxation = is_lp_relaxation
         self.__check_feasibility = check_feasibility
+        if self.__check_feasibility and \
+            not self.__query.get_objective().is_cvar_objective():
+            raise NotImplementedError(
+                'check_feasibility=True is only supported for CVaR objectives.'
+            )
         self.__optimize_lcvar = optimize_lcvar
         self.__prepare_for_alternative_packages = prepare_for_alternative_packages
         self.__early_termination = early_termination
@@ -53,9 +58,10 @@ class SketchRefine:
 
     def solve(self):
         self.__metrics.start_execution()
-        print('Relation Size:', self.__get_relation_size())
+        relation_size = self.__get_relation_size()
+        print('Relation Size:', relation_size)
         print('Size threshold:', Hyperparameters.SIZE_THRESHOLD)
-        if self.__get_relation_size() <= \
+        if relation_size <= \
             Hyperparameters.SIZE_THRESHOLD:
             print('Relation size small enough to apply RCLSolve directly')
             rclsolver = RCLSolve(
@@ -143,14 +149,22 @@ class SketchRefine:
                     new_pkg, new_obj, new_scenarios = \
                         sketch.re_solve()
                     if new_pkg is not None:
+                        sketch_package = new_pkg
+                        sketch_objective_value = new_obj
+                        no_of_optimization_scenarios = new_scenarios
                         result_package, result_objective = \
                             self.__try_refine(
-                                new_pkg, new_obj, new_scenarios)
+                                sketch_package,
+                                sketch_objective_value,
+                                no_of_optimization_scenarios
+                            )
 
             # Phase 2: multiplicity upper bounds on each partition
             if result_package is None:
                 for pid in sorted(sketch_package.keys()):
                     ub = int(sketch_package[pid]) - 1
+                    if ub < 0:
+                        ub = 0
                     print('Trying with upper bound', ub,
                           'on partition', pid)
                     new_pkg, new_obj, new_scenarios = \

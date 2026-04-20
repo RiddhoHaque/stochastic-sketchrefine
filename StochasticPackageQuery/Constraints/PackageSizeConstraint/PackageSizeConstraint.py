@@ -7,7 +7,7 @@ class PackageSizeConstraint(Constraint):
     def __init__(self):
         self.__package_size_limit = 0
         self.__inequality_sign = '<='
-        self.__is_package_size_limit_set = RelationalOperators.LESS_THAN_OR_EQUAL_TO
+        self.__is_package_size_limit_set = False
         self.__is_inequality_sign_set = False
 
     def is_package_size_constraint(self) -> bool:

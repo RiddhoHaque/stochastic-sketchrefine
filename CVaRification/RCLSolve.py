@@ -986,8 +986,15 @@ class RCLSolve:
                     if stochastic_constraint_index not in \
                         trivial_constraints:
                         if constraint.is_cvar_constraint():
-                            cvarified_constraint = \
-                                constraint
+                            cvarified_constraint = CVaRConstraint()
+                            cvarified_constraint.set_attribute_name(
+                                constraint.get_attribute_name())
+                            cvarified_constraint.set_percentage_of_scenarios(
+                                constraint.get_percentage_of_scenarios())
+                            cvarified_constraint.set_tail_type(
+                                'l' if constraint.get_tail_type() == TailType.LOWEST else 'h')
+                            cvarified_constraint.set_inequality_sign(
+                                '>' if constraint.get_inequality_sign() == RelationalOperators.GREATER_THAN_OR_EQUAL_TO else '<')
                             cvarified_constraint.set_sum_limit(
                                 cvar_thresholds[stochastic_constraint_index])
                         else:
@@ -1230,31 +1237,35 @@ class RCLSolve:
     ) -> float:
         if package_with_indices is None:
             return 0
-        attr = self.__query.get_objective().get_attribute_name()
+        objective = self.__query.get_objective()
+        attr = objective.get_attribute_name()
         if no_of_scenarios <= \
             self.__feasible_no_of_scenarios_to_store:
-            if self.__query.get_objective().is_cvar_objective():
+            if objective.is_cvar_objective():
                 idxs = list(package_with_indices.keys())
                 mults = np.array([package_with_indices[i] for i in idxs])
                 mat = np.array([self.__scenarios[attr][i] for i in idxs])
                 scenario_scores = mat.T @ mults
-                tail_type = self.__query.get_objective().get_tail_type()
+                tail_type = objective.get_tail_type()
                 if tail_type == TailType.HIGHEST:
                     scenario_scores = np.sort(scenario_scores)[::-1]
                 else:
                     scenario_scores = np.sort(scenario_scores)
                 k = max(1, int(np.floor(
-                    self.__query.get_objective().get_percentage_of_scenarios() *
+                    objective.get_percentage_of_scenarios() *
                     no_of_scenarios
                 )))
                 return float(np.average(scenario_scores[:k]))
             sum = 0
             for idx in package_with_indices:
-                sum += np.average(self.__scenarios[attr][idx]) * \
-                    package_with_indices[idx]
+                if objective.get_stochasticity() == Stochasticity.DETERMINISTIC:
+                    coefficient = self.__values[attr][idx]
+                else:
+                    coefficient = np.average(self.__scenarios[attr][idx])
+                sum += coefficient * package_with_indices[idx]
             return sum
         
-        if self.__query.get_objective().is_cvar_objective():
+        if objective.is_cvar_objective():
             all_scenario_scores = []
             total_scenarios = 0
             while total_scenarios < no_of_scenarios:
@@ -1265,15 +1276,21 @@ class RCLSolve:
                 mat = np.array([self.__scenarios[attr][i] for i in idxs])
                 all_scenario_scores.extend((mat.T @ mults).tolist())
             scenario_scores = np.array(all_scenario_scores)
-            tail_type = self.__query.get_objective().get_tail_type()
+            tail_type = objective.get_tail_type()
             if tail_type == TailType.HIGHEST:
                 scenario_scores = np.sort(scenario_scores)[::-1]
             else:
                 scenario_scores = np.sort(scenario_scores)
             k = max(1, int(np.floor(
-                self.__query.get_objective().get_percentage_of_scenarios() * total_scenarios
+                objective.get_percentage_of_scenarios() * total_scenarios
             )))
             return float(np.average(scenario_scores[:k]))
+
+        if objective.get_stochasticity() == Stochasticity.DETERMINISTIC:
+            sum = 0
+            for idx in package_with_indices:
+                sum += self.__values[attr][idx] * package_with_indices[idx]
+            return sum
 
         sum = 0
         total_scenarios = 0
@@ -1312,7 +1329,7 @@ class RCLSolve:
         if diff < 0:
             diff *= -1
 
-        rel_diff = diff / (objective_value_validation_scenarios
+        rel_diff = diff / (abs(objective_value_validation_scenarios)
             + 0.00001)
         
         #print('Relative difference:', rel_diff)
@@ -1450,7 +1467,7 @@ class RCLSolve:
             rel_diff = var_optimization - var_validation
         else:
             rel_diff= var_validation - var_optimization
-        rel_diff /= (var_validation + 0.000001)
+        rel_diff /= (abs(var_validation) + 0.000001)
 
         if rel_diff > self.__sampling_tolerance:
             return True, var_validation
@@ -1496,7 +1513,7 @@ class RCLSolve:
         else:
             rel_diff= cvar_validation - cvar_optimization
         
-        rel_diff /= (cvar_validation + 0.0000001)
+        rel_diff /= (abs(cvar_validation) + 0.0000001)
         
         if rel_diff > self.__sampling_tolerance:
             return True, cvar_validation
@@ -1946,7 +1963,17 @@ class RCLSolve:
                     if constraint.is_risk_constraint() and \
                             stochastic_constraint_index not in trivial_constraints:
                         if constraint.is_cvar_constraint():
-                            cvarified_constraint = constraint
+                            cvarified_constraint = CVaRConstraint()
+                            cvarified_constraint.set_attribute_name(
+                                constraint.get_attribute_name())
+                            cvarified_constraint.set_percentage_of_scenarios(
+                                constraint.get_percentage_of_scenarios())
+                            cvarified_constraint.set_tail_type(
+                                'l' if constraint.get_tail_type() == TailType.LOWEST else 'h')
+                            cvarified_constraint.set_inequality_sign(
+                                '>' if constraint.get_inequality_sign() == RelationalOperators.GREATER_THAN_OR_EQUAL_TO else '<')
+                            cvarified_constraint.set_sum_limit(
+                                cvar_thresholds[stochastic_constraint_index])
                         else:
                             cvarified_constraint = \
                                 self.__get_cvarified_constraint(
@@ -1958,7 +1985,7 @@ class RCLSolve:
                                 mid_no_of_scenarios_to_consider[
                                     stochastic_constraint_index],
                                 no_of_scenarios)
-                    
+
                         for _ in range(len(self.__vars)):
                             self.__model.chgCoeff(
                                 self.__risk_to_lcvar_constraint_mapping[
@@ -2331,9 +2358,13 @@ class RCLSolve:
         
         for idx in range(len(cvar_lower_bounds)):
             if cvar_lower_bounds[idx] > cvar_upper_bounds[idx]:
-                cvar_upper_bounds[idx] -= cvar_upper_bounds[idx]
+                cvar_upper_bounds[idx] -= (
+                    cvar_lower_bounds[idx] - cvar_upper_bounds[idx]
+                )
             else:
-                cvar_upper_bounds[idx] += cvar_upper_bounds[idx]
+                cvar_upper_bounds[idx] -= (
+                    cvar_lower_bounds[idx] - cvar_upper_bounds[idx]
+                )
         return cvar_upper_bounds, cvar_lower_bounds,\
             max_no_of_scenarios_to_consider,\
             min_no_of_scenarios_to_consider,\
@@ -2342,7 +2373,8 @@ class RCLSolve:
 
     def solve(self, can_add_scenarios = True):
         self.__metrics.start_execution()
-        if self.__solve_lp_first:
+        if self.__solve_lp_first and \
+                self.__query.get_objective().is_cvar_objective():
             result = self.__solve_with_lp_first()
             self.__metrics.end_execution(
                 result[1] if result[0] is not None else 0.0,
